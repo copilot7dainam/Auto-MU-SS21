@@ -339,6 +339,55 @@ python mu_calib.py --rays 24 --maxpx 250
 
 ---
 
+## 8. Giải mã toàn bộ map (`grid.json`)
+
+Mỗi `att_samples/WorldN/` chứa file `.att` mã hóa. Script giải mã toàn bộ
+thành JSON lưới 256×256 (tile → thuộc tính 16-bit), lưu tại 2 nơi:
+
+- `att_samples/_grid_cache/WorldN.json` — `mu_path.load_grid` đọc trực tiếp.
+- `att_samples/WorldN/grid.json` — bản sao để xem/lưu từng World.
+
+### Pipeline
+
+1. `decode_all_maps.py` (Python) — gọi `mu_path.load_grid(force=True)` cho mỗi
+   `WorldN`. Dùng engine giải mã JS (`gfxdec_src/att_dec.js`). **Chỉ giải được
+   các map dùng 3 thuật toán Modulus là TEA(0)/ThreeWay(1)/RC6(4)** hoặc
+   FileCryptor. Kết quả ~11/86 map.
+2. `gfxdec_src/batch_json.ts` (TypeScript) — dùng **engine TS đầy đủ**
+   (`terrain/formats/ATTReader.ts`) hỗ trợ cả 8 thuật toán Modulus
+   (CAST5/RC5/MARS/IDEA/GOST). Chạy:
+
+   ```powershell
+   cd gfxdec_src
+   node --experimental-transform-types batch_json.ts
+   ```
+
+   Kết quả: **85/86 World** được giải (bản cập nhật gần nhất).
+
+### Cách chọn file `.att`
+
+`batch_json.ts` ưu tiên: `EncTerrainN_.att` → `EncTerrainN.att` → `EncTerrain.att`.
+(Vài map như World7 chỉ giải được từ bản `EncTerrain7_.att`.)
+
+### Trường hợp đặc biệt / chưa giải được
+
+- **World67**: file `EncTerrain67.att` dùng lược đồ mã hóa **không thuộc**
+  FileCryptor cũng như ModulusCryptor (8 thuật toán đều thử đều ra rác). Đây là
+  định dạng mới hơn chưa có engine tương ứng trong repo này → **chưa có grid**.
+  `mu_goto.py` sẽ báo lỗi rõ ràng ("Loi load map 67: ...") nếu bạn chọn map này,
+  không crash.
+- Một số map có nhiều biến thể `.att` (vd World1 có `EncTerrain1/11/12/_Server_64k`);
+  picker chỉ lấy 1 file ưu tiên, đủ để pathfinding.
+
+### Khi thêm map mới
+
+Copy `WorldN/` chứa `.att` vào `att_samples/`, chạy `batch_json.ts` lại. Nếu map
+mới cũng lỗi giống World67 → cần bổ sung engine giải mã tương ứng (tham khảo repo
+[xulek/muonline-bmd-viewer](https://github.com/xulek/muonline-bmd-viewer) hoặc
+GFxDec S21).
+
+---
+
 ## 8. Cấu trúc thư mục
 
 ```
