@@ -13,9 +13,11 @@ Yeu cau: pip install pymem ; chay QUYEN ADMIN. Game o che do WINDOWED.
 
 Su dung: python mu_goto.py
 """
-import sys, time, math, json, ctypes, ctypes.wintypes as wt
+import sys, os, time, math, json, ctypes, ctypes.wintypes as wt
 import tkinter as tk
 import pymem, pymem.process
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mu_path
 
 PROCESS_NAME = "main.exe"
 BASE = 0x400000
@@ -148,14 +150,17 @@ def main():
     running = [False]
 
     root = tk.Tk()
-    root.title("MU GOTO - Click chuot")
-    root.geometry("340x240")
-    tk.Label(root, text="Target X:").grid(row=0, column=0, padx=8, pady=6)
-    tk.Label(root, text="Target Y:").grid(row=1, column=0, padx=8, pady=6)
-    ex = tk.Entry(root); ex.grid(row=0, column=1)
-    ey = tk.Entry(root); ey.grid(row=1, column=1)
-    status = tk.Label(root, text="San sang", anchor="w")
-    status.grid(row=3, column=0, columnspan=2, sticky="ew", padx=8, pady=8)
+    root.title("MU GOTO - A* pathfinding")
+    root.geometry("360x280")
+    tk.Label(root, text="Map #:").grid(row=0, column=0, padx=8, pady=6)
+    tk.Label(root, text="Target X:").grid(row=1, column=0, padx=8, pady=6)
+    tk.Label(root, text="Target Y:").grid(row=2, column=0, padx=8, pady=6)
+    em = tk.Entry(root); em.grid(row=0, column=1)
+    em.insert(0, "1")
+    ex = tk.Entry(root); ex.grid(row=1, column=1)
+    ey = tk.Entry(root); ey.grid(row=2, column=1)
+    status = tk.Label(root, text="San sang", anchor="w", justify="left")
+    status.grid(row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=8)
 
     def set_status(msg):
         root.after(0, lambda: status.config(text=msg))
@@ -164,32 +169,55 @@ def main():
         if running[0]:
             return
         try:
-            tx = float(ex.get()); ty = float(ey.get())
+            m = int(em.get()); tx = float(ex.get()); ty = float(ey.get())
         except ValueError:
-            set_status("X/Y phai la so.")
+            set_status("Map/X/Y phai la so.")
             return
         running[0] = True
-        set_status(f"Di toi ({tx:.0f},{ty:.0f})...")
+        set_status(f"Load map {m}...")
         try:
-            for step in range(200):
+            walk, _ = mu_path.load_grid(m)
+        except Exception as e:
+            set_status(f"Loi load map {m}: {e}")
+            running[0] = False
+            return
+        set_status(f"Di toi map{m} ({tx:.0f},{ty:.0f}) bang A*...")
+        try:
+            for step in range(400):
                 if not running[0]:
                     break
                 x, y = rd_pos(pm)
                 if x is None:
                     set_status("Mat ket noi game. Kiem tra Admin + game mo.")
                     break
-                dx, dy = tx - x, ty - y
-                dist = math.hypot(dx, dy)
-                if dist < 2.0:
+                # tile hien tai va dich
+                sx, sy = mu_path.coord_to_tile(x, y)
+                gx, gy = mu_path.coord_to_tile(tx, ty)
+                dist_goal = math.hypot(tx - x, ty - y)
+                if dist_goal < 2.0:
                     set_status(f"DEN NOI ({x:.1f},{y:.1f})")
                     break
+                path = mu_path.astar(walk, (sx, sy), (gx, gy))
+                if not path or len(path) < 2:
+                    set_status(f"Khong tim duoc duong toi ({tx:.0f},{ty:.0f}). Co the la tuong.")
+                    break
+                # buoc ke tiep: chon waypoint cach hien tai ~ 3-5 unit de click
+                nxt = None
+                for wp in path[1:]:
+                    d = math.hypot(wp[0]-sx, wp[1]-sy)
+                    if d >= 2:
+                        nxt = wp; break
+                if nxt is None:
+                    nxt = path[1]
+                wx, wy = mu_path.tile_to_coord(*nxt)
+                dx, dy = wx - x, wy - y
                 click_x = cx_screen + k[0] * dx
                 click_y = cy_screen + k[0] * dy
                 click_x = max(L + 10, min(L + W - 10, click_x))
                 click_y = max(T + 10, min(T + H - 10, click_y))
                 prev = (x, y)
                 click_at(click_x, click_y, right=False)
-                time.sleep(1.2)
+                time.sleep(1.0)
                 nx, ny = rd_pos(pm)
                 if nx is None:
                     continue
@@ -200,9 +228,9 @@ def main():
                         new_k = pix / moved
                         k[0] = 0.7 * k[0] + 0.3 * new_k
                         save_k(k[0])
-                set_status(f"cur=({nx:.1f},{ny:.1f}) dist={math.hypot(tx-nx,ty-ny):.1f} k={k[0]:.1f}")
+                set_status(f"wp={len(path)} cur=({nx:.1f},{ny:.1f}) goal={dist_goal:.1f} k={k[0]:.1f}")
             if running[0]:
-                set_status("Het buoc (200). Co the bi chan/vat can.")
+                set_status("Het buoc (400). Co the bi chan/vat can.")
         except Exception as e:
             set_status(f"Loi: {e}")
         finally:
