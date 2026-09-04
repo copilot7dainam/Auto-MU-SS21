@@ -1,15 +1,15 @@
 """
-MU GOTO - Nhap X,Y -> OK -> nhan vat di toi (bang cach click chuot gia lap).
+MU GOTO - Di chuyen den toa do mong muon bang click gia lap.
 
-CACH HOAT DONG:
-  Nhan vat luon o GIUA man hinh (camera follow). Khi ta RIGHT-CLICK vao 1 diem
-  tren man hinh, client tu tinh duong di (A*) den toa do game tai diem do.
-  Ta chi can click vao vi tri man hinh tuong ung voi (X,Y) dich.
+Cach hoat dong don gian:
+  1. Doc toa do hien tai cua nhan vat tu memory.
+  2. Ban nhap toa do dich (X, Y).
+  3. Tool tinh delta world = dich - hien tai, chuyen sang delta pixel
+     qua ma tran calib (MU isometric), roi LEFT-CLICK tai vi tri do.
+  4. Cho nhan vat di, doc lai toa do, lap lai den khi den noi.
 
-  Vi tri click = center + k * (target - current)
-    voi k = he so pixel / game-unit (tu dong hieu chinh qua cac lan click).
-
-Yeu cau: pip install pymem ; chay QUYEN ADMIN. Game o che do WINDOWED.
+Yeu cau: pip install pymem ; chay QUYEN ADMIN. Game WINDOWED.
+Ma tran calib lay tu mu_goto_calib.json (do mu_calib.py tao).
 
 Su dung: python mu_goto.py
 """
@@ -20,25 +20,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mu_path
 
 PROCESS_NAME = "main.exe"
-BASE = 0x400000
 CUR_X = 0xB80AF60
 CUR_Y = 0xB80AF64
-CONFIG_FILE = "mu_goto.json"
 CALIB_FILE = "mu_goto_calib.json"
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
-adv = ctypes.wintypes  # placeholder, not used
 user32.SetProcessDPIAware()
 
-# He so mac dinh: pixel tren man hinh cho moi 1 don vi game.
-# Do thuc te: click lech 150px -> nhan vat di ~2.83 unit => k ~ 53.
-DEFAULT_K = 50.0
+# Nguong: den gan dich hon muc nay thi coi nhu den noi (don vi world)
+ARRIVE = 1.5
 
 
 def enable_debug():
     try:
-        import ctypes
         advapi32 = ctypes.windll.advapi32
         h = wt.HANDLE()
         if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x20 | 0x8, ctypes.byref(h)):
@@ -98,39 +93,52 @@ def rd_pos(pm):
         return None, None
 
 
-def click_at(sx, sy, right=False):
-    """Click bang mouse_event + SetCursorPos (da chung minh hoat dong voi epicmu).
-    Mac dinh LEFT (epicmu move = left click)."""
+def click_at(sx, sy, right=False, hwnd=None):
+    """Click vao vi tri man hinh (sx,sy) bang SetCursorPos + mouse_event.
+    Day la cach DA CHUNG MINH hoat dong voi epicmu (game doc toa do chuot that).
+    De KHONG chiem chuot lau: luu vi tri chuot that, click xong tra lai ngay."""
+    orig = wt.POINT()
+    user32.GetCursorPos(ctypes.byref(orig))
     sx, sy = int(sx), int(sy)
-    # Di chuyen chuot that den toa do truoc khi press (game mot so client can dieu nay)
     user32.SetCursorPos(sx, sy)
     time.sleep(0.02)
     down = 0x0008 if right else 0x0002   # RIGHTDOWN / LEFT DOWN
-    up = 0x0010 if right else 0x0004     # RIGHTUP / LEFT UP
+    up = 0x0010 if right else 0x0004      # RIGHTUP / LEFT UP
     user32.mouse_event(down, 0, 0, 0, 0)
     time.sleep(0.04)
     user32.mouse_event(up, 0, 0, 0, 0)
+    # tra chuot ve vi tri cu (chi chiem vai chuc ms)
+    user32.SetCursorPos(orig.x, orig.y)
 
 
-def load_k():
+def load_matrix():
+    """Load ma tran world_per_px tu calib. Tra ve (A, inv)."""
     try:
-        return json.load(open(CALIB_FILE))["k"]
+        a = json.load(open(CALIB_FILE))["world_per_px"]
+        A = ((a[0], a[1]), (a[2], a[3]))
     except Exception:
-        return DEFAULT_K
-
-
-def save_k(k):
-    json.dump({"k": k}, open(CALIB_FILE, "w"))
+        # fallback tu lan do thuc te
+        A = ((0.01494, 0.02190), (0.01728, -0.02415))
+    a00, a01 = A[0]; a10, a11 = A[1]
+    det = a00 * a11 - a01 * a10
+    if abs(det) < 1e-9:
+        inv = ((1, 0), (0, 1))
+    else:
+        inv = ((a11 / det, -a01 / det), (-a10 / det, a00 / det))
+    return A, inv
 
 
 def main():
     enable_debug()
     pm = pymem.Pymem(PROCESS_NAME)
     L, T, W, H = find_window()
-    cx_screen, cy_screen = L + W // 2, T + H // 2   # vi tri nhan vat (giua man hinh)
-    k = [load_k()]
+    cx_screen, cy_screen = L + W // 2, T + H // 2
+    A, inv = load_matrix()
+    print(f"[calib] A={A}")
+    print(f"[calib] inv={inv}")
+    print(f"[window] {W}x{H} tai ({L},{T}); tam nhan vat=({cx_screen},{cy_screen})")
 
-    # Focus cua so game (debug chung minh can thiet)
+    # Focus cua so game
     procs = pymem.process.list_processes()
     target_pids = {p.th32ProcessID for p in procs
                    if p.szExeFile.decode('utf-8', 'ignore').lower() == PROCESS_NAME.lower()}
@@ -147,23 +155,38 @@ def main():
     user32.EnumWindows(finder, 0)
     if GW[0]:
         user32.SetForegroundWindow(GW[0])
-    running = [False]
 
+    running = [False]
     root = tk.Tk()
-    root.title("MU GOTO - A* pathfinding")
-    root.geometry("360x280")
+    root.title("MU GOTO - den toa do")
+    root.geometry("360x520")
     tk.Label(root, text="Map #:").grid(row=0, column=0, padx=8, pady=6)
     tk.Label(root, text="Target X:").grid(row=1, column=0, padx=8, pady=6)
     tk.Label(root, text="Target Y:").grid(row=2, column=0, padx=8, pady=6)
-    em = tk.Entry(root); em.grid(row=0, column=1)
-    em.insert(0, "1")
+    em = tk.Entry(root); em.grid(row=0, column=1); em.insert(0, "1")
     ex = tk.Entry(root); ex.grid(row=1, column=1)
     ey = tk.Entry(root); ey.grid(row=2, column=1)
+    cur = tk.Label(root, text="Hien tai: (?, ?)", anchor="w")
+    cur.grid(row=3, column=0, columnspan=2, sticky="ew", padx=8, pady=4)
     status = tk.Label(root, text="San sang", anchor="w", justify="left")
-    status.grid(row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=8)
+    status.grid(row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=6)
 
-    def set_status(msg):
-        root.after(0, lambda: status.config(text=msg))
+    # Bang log duong di
+    tk.Label(root, text="Duong di (xanh = da den):").grid(
+        row=5, column=0, columnspan=2, sticky="w", padx=8)
+    logbox = tk.Listbox(root, height=12, width=44)
+    logbox.grid(row=6, column=0, columnspan=2, padx=8, pady=4)
+
+    def set_status(m):
+        root.after(0, lambda: status.config(text=m))
+
+    def log_add(text, done=False):
+        root.after(0, lambda: _log_add(text, done))
+    def _log_add(text, done):
+        logbox.insert(tk.END, text)
+        if done:
+            logbox.itemconfig(tk.END, fg="green")
+        logbox.see(tk.END)
 
     def goto():
         if running[0]:
@@ -171,66 +194,107 @@ def main():
         try:
             m = int(em.get()); tx = float(ex.get()); ty = float(ey.get())
         except ValueError:
-            set_status("Map/X/Y phai la so.")
-            return
+            set_status("Map/X/Y phai la so."); return
         running[0] = True
         set_status(f"Load map {m}...")
         try:
-            walk, _ = mu_path.load_grid(m)
+            walk, is_ext = mu_path.load_grid(m)
         except Exception as e:
             set_status(f"Loi load map {m}: {e}")
-            running[0] = False
-            return
+            running[0] = False; return
         set_status(f"Di toi map{m} ({tx:.0f},{ty:.0f}) bang A*...")
+        x0, y0 = rd_pos(pm)
+        if x0 is None:
+            set_status("Mat ket noi game. Admin + game mo."); running[0] = False; return
+
+        # --- A* tu vi tri hien tai toi dich, lay duong di waypoint ---
+        s0 = mu_path.coord_to_tile(x0, y0)
+        g0 = mu_path.coord_to_tile(tx, ty)
+        sx, sy = mu_path.nearest_walkable(walk, *s0) or s0
+        gx, gy = mu_path.nearest_walkable(walk, *g0) or g0
+        # neu dich la tuong, thong bao toa do thuc se la tile walkable gan nhat
+        if (gx, gy) != g0:
+            log_add(f"  Dich ({tx:.0f},{ty:.0f}) la tuong -> snap ({gx},{gy})")
+        path = mu_path.astar(walk, (sx, sy), (gx, gy))
+        if not path or len(path) < 2:
+            set_status(f"Khong tim duoc duong toi ({tx:.0f},{ty:.0f}). Co the bi ket boi tuong.")
+            running[0] = False; return
+        # chuyen waypoint tile -> toa do world (tam tile)
+        wps = [mu_path.tile_to_coord(*p) for p in path]
+        log_add(f"  A* tim thay {len(wps)} waypoint tu ({sx},{sy})->({gx},{gy})")
+        wp_idx = [0]
+
+        # --- Tham so thuat toan: cadence click de di muot ---
+        AHEAD = 4.0        # luon giu diem dich phia truoc ~4 unit theo huong toi dich
+        CLICK_INTERVAL = 0.30
+        MOV_AHEAD = 1.5
+        MIN_GAP = 0.10
+        STUCK_T = 2.0
+        REACH_WP = 2.5     # den gan waypoint nay thi chuyen waypoint ke tiep
+        POLL = 0.03
+
+        last_click_pos = (x0, y0)
+        last_click_t = -10.0
+        last_move_t = time.time()
+        last_pos = (x0, y0)
+        step_no = [0]
         try:
-            for step in range(400):
-                if not running[0]:
-                    break
+            while running[0]:
                 x, y = rd_pos(pm)
                 if x is None:
-                    set_status("Mat ket noi game. Kiem tra Admin + game mo.")
-                    break
-                # tile hien tai va dich
-                sx, sy = mu_path.coord_to_tile(x, y)
-                gx, gy = mu_path.coord_to_tile(tx, ty)
+                    set_status("Mat ket noi game."); break
+                root.after(0, lambda v=(x, y): cur.config(
+                    text=f"Hien tai: ({v[0]:.1f}, {v[1]:.1f})"))
+                now = time.time()
+                moved = math.hypot(x - last_pos[0], y - last_pos[1])
+                if moved > 0.1:
+                    last_move_t = now
+                    last_pos = (x, y)
+
+                # chuyen sang waypoint A* ke tiep neu da den waypoint hien tai
+                while (wp_idx[0] < len(wps) - 1 and
+                       math.hypot(wps[wp_idx[0]][0] - x, wps[wp_idx[0]][1] - y) < REACH_WP):
+                    wp_idx[0] += 1
+                    log_add(f"  WP {wp_idx[0]+1}/{len(wps)} ({wps[wp_idx[0]][0]:.0f},"
+                            f"{wps[wp_idx[0]][1]:.0f})", done=True)
+
+                tx_seg, ty_seg = wps[wp_idx[0]]
                 dist_goal = math.hypot(tx - x, ty - y)
-                if dist_goal < 2.0:
+                if dist_goal < ARRIVE:
+                    log_add(f"  DEN NOI ({x:.1f},{y:.1f})", done=True)
                     set_status(f"DEN NOI ({x:.1f},{y:.1f})")
                     break
-                path = mu_path.astar(walk, (sx, sy), (gx, gy))
-                if not path or len(path) < 2:
-                    set_status(f"Khong tim duoc duong toi ({tx:.0f},{ty:.0f}). Co the la tuong.")
-                    break
-                # buoc ke tiep: chon waypoint cach hien tai ~ 3-5 unit de click
-                nxt = None
-                for wp in path[1:]:
-                    d = math.hypot(wp[0]-sx, wp[1]-sy)
-                    if d >= 2:
-                        nxt = wp; break
-                if nxt is None:
-                    nxt = path[1]
-                wx, wy = mu_path.tile_to_coord(*nxt)
-                dx, dy = wx - x, wy - y
-                click_x = cx_screen + k[0] * dx
-                click_y = cy_screen + k[0] * dy
-                click_x = max(L + 10, min(L + W - 10, click_x))
-                click_y = max(T + 10, min(T + H - 10, click_y))
-                prev = (x, y)
-                click_at(click_x, click_y, right=False)
-                time.sleep(1.0)
-                nx, ny = rd_pos(pm)
-                if nx is None:
-                    continue
-                moved = math.hypot(nx - prev[0], ny - prev[1])
-                if moved > 0.3:
-                    pix = math.hypot(click_x - cx_screen, click_y - cy_screen)
-                    if moved > 0.1:
-                        new_k = pix / moved
-                        k[0] = 0.7 * k[0] + 0.3 * new_k
-                        save_k(k[0])
-                set_status(f"wp={len(path)} cur=({nx:.1f},{ny:.1f}) goal={dist_goal:.1f} k={k[0]:.1f}")
+                # den waypoint cuoi -> dich chinh la tx,ty
+                if wp_idx[0] >= len(wps) - 1:
+                    tx_seg, ty_seg = tx, ty
+
+                # diem dich phia truoc tren duong thang toi waypoint, cach AHEAD
+                dseg = math.hypot(tx_seg - x, ty_seg - y)
+                if dseg <= AHEAD:
+                    aim_x, aim_y = tx_seg, ty_seg
+                else:
+                    k = AHEAD / dseg
+                    aim_x = x + (tx_seg - x) * k
+                    aim_y = y + (ty_seg - y) * k
+
+                moved_since = math.hypot(x - last_click_pos[0], y - last_click_pos[1])
+                stuck = (now - last_move_t > STUCK_T)
+                if (now - last_click_t >= CLICK_INTERVAL or moved_since >= MOV_AHEAD
+                        or stuck) and now - last_click_t >= MIN_GAP:
+                    dx_px = inv[0][0] * (aim_x - x) + inv[0][1] * (aim_y - y)
+                    dy_px = inv[1][0] * (aim_x - x) + inv[1][1] * (aim_y - y)
+                    click_x = max(L + 10, min(L + W - 10, cx_screen + dx_px))
+                    click_y = max(T + 10, min(T + H - 10, cy_screen + dy_px))
+                    step_no[0] += 1
+                    tag = " (stuck)" if stuck else ""
+                    log_add(f"  [{step_no[0]}] -> ({aim_x:.1f},{aim_y:.1f}) "
+                            f"click({int(click_x)},{int(click_y)}){tag}")
+                    click_at(click_x, click_y, right=False)
+                    last_click_pos = (x, y)
+                    last_click_t = now
+                time.sleep(POLL)
             if running[0]:
-                set_status("Het buoc (400). Co the bi chan/vat can.")
+                set_status("Da dung.")
         except Exception as e:
             set_status(f"Loi: {e}")
         finally:
@@ -241,8 +305,8 @@ def main():
         set_status("Da dung.")
 
     import threading
-    tk.Button(root, text="OK - Di toi", command=lambda: threading.Thread(target=goto, daemon=True).start()).grid(row=2, column=0, pady=8)
-    tk.Button(root, text="STOP", command=stop).grid(row=2, column=1, pady=8)
+    tk.Button(root, text="OK - Di toi", command=lambda: threading.Thread(target=goto, daemon=True).start()).grid(row=7, column=0, pady=8)
+    tk.Button(root, text="STOP", command=stop).grid(row=7, column=1, pady=8)
     root.mainloop()
 
 

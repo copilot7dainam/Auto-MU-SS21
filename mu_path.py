@@ -106,6 +106,21 @@ def coord_to_tile(x, y):
     return (int(round(x)) % N, int(round(y)) % N)
 
 
+def nearest_walkable(walk, tx, ty, max_r=30):
+    """Tra ve (x,y) tile walkable gan nhat voi (tx,ty). None neu khong co."""
+    if 0 <= tx < N and 0 <= ty < N and walk[ty][tx]:
+        return (tx, ty)
+    for r in range(1, max_r + 1):
+        for dy in range(-r, r + 1):
+            for dx in range(-r, r + 1):
+                if abs(dx) != r and abs(dy) != r:
+                    continue  # chi xet vien hinh vuong ban kinh r
+                x, y = tx + dx, ty + dy
+                if 0 <= x < N and 0 <= y < N and walk[y][x]:
+                    return (x, y)
+    return None
+
+
 def tile_to_coord(tx, ty):
     return float(tx), float(ty)
 
