@@ -139,6 +139,28 @@ def astar(walk, start, goal):
     return None
 
 
+def replan(walk, start, goal, blocked=None, radius=3):
+    """Tim duong moi tu start->goal, CO BLOCK TAM THOI cac o quanh vi tri 'blocked'
+    (vi tri nhan vat bi kem). radius: ban kinh block them quanh blocked de ep duong
+    di VONG qua, khong di lai toa do bi kem. Tra ve list waypoint hoac None."""
+    import copy
+    w = [row[:] for row in walk]   # sao chep de khong sua grid goc
+    if blocked is not None:
+        bx, by = blocked
+        for dy in range(-radius, radius + 1):
+            for dx in range(-radius, radius + 1):
+                nx, ny = bx + dx, by + dy
+                if 0 <= nx < N and 0 <= ny < N:
+                    w[ny][nx] = False
+    # dam bao start/goal van walkable (nhan vat dang o do, va dich co the trong vung)
+    sx, sy = start; gx, gy = goal
+    if 0 <= sx < N and 0 <= sy < N:
+        w[sy][sx] = True
+    if 0 <= gx < N and 0 <= gy < N:
+        w[gy][gx] = True
+    return astar(w, start, goal)
+
+
 def coord_to_tile(x, y):
     return (int(round(x)) % N, int(round(y)) % N)
 

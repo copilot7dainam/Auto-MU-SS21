@@ -255,6 +255,20 @@ def main():
     status = tk.Label(root, text="San sang", anchor="w", justify="left")
     status.grid(row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=6)
 
+    # --- Cap nhat toa do hien tai cua nhan vat NGAY KHI APP KHOI DONG ---
+    # Poll moi 200ms, hien thi vao label "Hien tai" de nguoi dung biet vi tri.
+    LIVE_POS = [None, None]
+    def poll_live():
+        try:
+            x, y = rd_pos(pm)
+            if x is not None:
+                LIVE_POS[0], LIVE_POS[1] = x, y
+                cur.config(text=f"Hien tai: ({x:.1f}, {y:.1f})")
+        except Exception:
+            pass
+        root.after(200, poll_live)
+    root.after(200, poll_live)
+
     # Danh sach cac diem tren duong di (toi da 10 dong)
     tk.Label(root, text="Cac diem (den=xanh, cuoi=do, toi da 10 dong):").grid(
         row=5, column=0, columnspan=2, sticky="w", padx=8)
@@ -300,7 +314,11 @@ def main():
         mov_ahead = 6.0
         running[0] = True
         set_status(f"Load map {m}...")
-        x0, y0 = rd_pos(pm)
+        # Uu tien toa do da duoc poll truc tiep tu khi app khoi dong (LIVE_POS)
+        if LIVE_POS[0] is not None:
+            x0, y0 = LIVE_POS[0], LIVE_POS[1]
+        else:
+            x0, y0 = rd_pos(pm)
         if x0 is None:
             set_status("Mat ket noi game. Admin + game mo."); running[0] = False; return
         # Tinh tile start/goal truoc de giu nguyen walkable (khong bi margin loai)
@@ -396,6 +414,48 @@ def main():
                 moved = math.hypot(x - last_pos[0], y - last_pos[1])
                 if moved > 0.1:
                     last_move_t = now
+                    last_pos = (x, y)
+
+                # --- Phat hien KET (stuck): 2s toa do khong doi -> ve duong moi ---
+                if now - last_move_t > STUCK_T:
+                    cur_tile = mu_path.coord_to_tile(x, y)
+                    log_add(f"  BI KET tai ({x:.1f},{y:.1f}) -> tim duong vong...")
+                    # Block tam thoi vung hien tai, bat buoc di vong qua
+                    new_path = mu_path.replan(walk, cur_tile,
+                                              mu_path.coord_to_tile(tx, ty),
+                                              blocked=cur_tile, radius=3)
+                    if new_path and len(new_path) >= 2:
+                        wps[:] = [mu_path.tile_to_coord(*p) for p in new_path]
+                        n_wp = len(wps)
+                        wp_idx[0] = 0
+                        # Xoa log diem cu, hien duong moi tu dau
+                        logbox.delete(0, tk.END)
+                        wp_lines.clear()
+                        reveal_wp(0, None)
+                        log_add(f"  Duong moi: {n_wp} diem (tranh ({x:.0f},{y:.0f}))")
+                        set_status(f"Da ve duong vong ({n_wp} diem)")
+                    else:
+                        log_add("  Khong tim duoc duong vong, thu grid goc...")
+                        try:
+                            walk0, _ = mu_path.load_grid(m, safe_margin=0, keep_points=[cur_tile, mu_path.coord_to_tile(tx, ty)])
+                            new_path = mu_path.replan(walk0, cur_tile,
+                                                      mu_path.coord_to_tile(tx, ty),
+                                                      blocked=cur_tile, radius=3)
+                        except Exception:
+                            new_path = None
+                        if new_path and len(new_path) >= 2:
+                            wps[:] = [mu_path.tile_to_coord(*p) for p in new_path]
+                            n_wp = len(wps)
+                            wp_idx[0] = 0
+                            logbox.delete(0, tk.END)
+                            wp_lines.clear()
+                            reveal_wp(0, None)
+                            walk = walk0
+                            log_add(f"  Duong moi (grid goc): {n_wp} diem")
+                            set_status(f"Da ve duong vong (grid goc, {n_wp} diem)")
+                        else:
+                            log_add("  Van kem: tiep tuc cho hoac nhan Space de dung.")
+                    last_move_t = now  # reset de tranh replan lien tuc
                     last_pos = (x, y)
 
                 # chuyen sang waypoint A* ke tiep neu da den waypoint hien tai
