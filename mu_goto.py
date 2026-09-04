@@ -241,15 +241,32 @@ def main():
         user32.SetForegroundWindow(GW[0])
 
     running = [False]
+    # --- Danh sach cac map co san (.att) de cho vao dropdown ---
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    avail_maps = []
+    att_dir = os.path.join(HERE, "att_samples")
+    if os.path.isdir(att_dir):
+        for d in sorted(os.listdir(att_dir)):
+            if d.startswith("World") and os.path.isdir(os.path.join(att_dir, d)):
+                try:
+                    avail_maps.append(int(d[len("World"):]))
+                except ValueError:
+                    pass
+    if not avail_maps:
+        avail_maps = [1]
+
     root = tk.Tk()
     root.title("MU GOTO - den toa do")
     root.geometry("360x560")
-    tk.Label(root, text="Map #:").grid(row=0, column=0, padx=8, pady=6)
-    tk.Label(root, text="Target X:").grid(row=1, column=0, padx=8, pady=6)
-    tk.Label(root, text="Target Y:").grid(row=2, column=0, padx=8, pady=6)
-    em = tk.Entry(root); em.grid(row=0, column=1); em.insert(0, "1")
-    ex = tk.Entry(root); ex.grid(row=1, column=1)
-    ey = tk.Entry(root); ey.grid(row=2, column=1)
+    sel_map = tk.StringVar(value=str(avail_maps[0]))
+    tk.Label(root, text="Map:").grid(row=0, column=0, padx=8, pady=6)
+    map_menu = tk.OptionMenu(root, sel_map, *[str(x) for x in avail_maps])
+    map_menu.grid(row=0, column=1, padx=8, pady=6, sticky="w")
+    # Toa do X,Y tren cung 1 dong, ben phai input Map
+    tk.Label(root, text="Toa do X:").grid(row=0, column=2, padx=(4,2), pady=6)
+    ex = tk.Entry(root, width=7); ex.grid(row=0, column=3, padx=2, pady=6)
+    tk.Label(root, text="Y:").grid(row=0, column=4, padx=(2,2), pady=6)
+    ey = tk.Entry(root, width=7); ey.grid(row=0, column=5, padx=2, pady=6)
     cur = tk.Label(root, text="Hien tai: (?, ?)", anchor="w")
     cur.grid(row=3, column=0, columnspan=2, sticky="ew", padx=8, pady=4)
     status = tk.Label(root, text="San sang", anchor="w", justify="left")
@@ -306,7 +323,7 @@ def main():
         if running[0]:
             return
         try:
-            m = int(em.get()); tx = float(ex.get()); ty = float(ey.get())
+            m = int(sel_map.get()); tx = float(ex.get()); ty = float(ey.get())
         except ValueError:
             set_status("Map/X/Y phai la so."); return
         # Tham so da chon sau khi test: 0.1s / 6 unit
