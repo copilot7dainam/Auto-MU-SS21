@@ -11,3 +11,11 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+
+# Node
+node_modules/
+gfxdec_src/node_modules/
+
+# Runtime
+*.cache
+__pycache__/
