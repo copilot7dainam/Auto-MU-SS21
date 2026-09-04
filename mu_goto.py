@@ -24,6 +24,30 @@ CUR_X = 0xB80AF60
 CUR_Y = 0xB80AF64
 CALIB_FILE = "mu_goto_calib.json"
 
+# Ten map S21 (id -> ten). Dung de hien thi ten thay vi so ID trong dropdown.
+# Lay tu mu_epic_gallery.py; them/bot tuy y.
+# Cap nhat ten tu Test.htm (map nguoi dung doi ten). Map khong ten / "None" khong co
+# o day -> hien thi so va nam cuoi dropdown.
+MAP_NAMES = {
+    1:"Lorencia",2:"Dungeon",3:"Devias",4:"Noria",5:"Lost Tower",7:"Arena",
+    8:"Atlans",9:"Tarkan",10:"Devil Square",11:"Icarus",12:"Blood Castle",
+    19:"Chaos Catsle",25:"Kalima2",31:"Valley of Loren 2",32:"Land of Trials",
+    34:"Aida",35:"Crywolf 3",38:"Kanturu Ruins",39:"Kanturu 1 (Remain)",
+    40:"Kanturu 2 (Refinery Tower)",42:"Barracks of Balgass",43:"Balgass Refuge",
+    47:"Illusion Temple 1",52:"Elbeland",57:"Swamp of Calmness",58:"Raklion",
+    59:"Hatchery (Raklion Boss)",64:"Vulcanus",65:"Duel Arena",69:"Double Goer",
+    80:"Loren Market",81:"Karutan 1",82:"Karutan 2",92:"Acheron",94:"Null",
+    95:"Debenter",96:"Debenter",99:"Illusion Temple League",101:"Urk Mountain",
+    103:"Event",111:"Nars",113:"Ferea",114:"Nixie Lake",121:"Deep Dungeon 5",
+    122:"Test Area",124:"Kubera Mine",129:"Atlans Abyss",134:"Arenil Temple",
+    135:"Gray Aida",136:"Old Kethotum",137:"Old Kethotum",138:"Kanturu Underground",
+    139:"Ignis Vulcanus",140:"Battle Boss",141:"Bloody Tarkan",142:"Tormenta Island",
+    143:"Twisted Karutan",144:"Kardamahal Underground Temple",
+    117:"Deep Dungeon 1",118:"Deep Dungeon 2",119:"Deep Dungeon 3",120:"Deep Dungeon 4",
+    130:"Atlans Abyss 2",131:"Atlans Abyss 3",132:"Scotch Canyon",133:"Redsmoke Icarus",
+    145:"Swamp of Despair",146:"Aquilas Santuary",147:"Forgotten Ralkion",
+}
+
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 user32.SetProcessDPIAware()
@@ -255,6 +279,18 @@ def main():
     if not avail_maps:
         avail_maps = [1]
 
+    # Sap xep: map co ten ro rang len truoc (theo World tang dan),
+    # map khong ten / None nam cuoi cung (giu thu tu World).
+    named = sorted((m for m in avail_maps if MAP_NAMES.get(m)), key=lambda m: m)
+    unnamed = sorted((m for m in avail_maps if not MAP_NAMES.get(m)), key=lambda m: m)
+    avail_maps = named + unnamed
+
+    # Hien thi ten map thay vi ID: ("Lorencia (1)", 1)
+    def map_label(mid):
+        nm = MAP_NAMES.get(mid, "")
+        return f"{nm} ({mid})" if nm else str(mid)
+    map_disp = [map_label(m) for m in avail_maps]
+
     def stop():
         running[0] = False
         set_status("Da dung.")
@@ -266,6 +302,7 @@ def main():
     root.geometry("380x540")
     root.resizable(False, False)
     root.columnconfigure(0, weight=1)
+    sel_map_id = tk.IntVar(value=avail_maps[0])
     try:
         ttk.Style().theme_use("clam")
     except Exception:
@@ -276,9 +313,12 @@ def main():
     top = ttk.Frame(root); top.grid(row=0, column=0, padx=PAD, pady=(PAD, 2), sticky="ew")
     top.columnconfigure(0, weight=0); top.columnconfigure(1, weight=1)
     ttk.Label(top, text="Map:").grid(row=0, column=0, padx=(0, 4))
-    sel_map = tk.StringVar(value=str(avail_maps[0]))
-    map_menu = ttk.OptionMenu(top, sel_map, avail_maps[0], *[str(x) for x in avail_maps])
-    map_menu.configure(width=8)
+    def _on_map_sel(*_):
+        sel_map_id.set(avail_maps[map_disp.index(sel_map_disp.get())])
+    sel_map_disp = tk.StringVar(value=map_disp[0])
+    sel_map_disp.trace_add("write", _on_map_sel)
+    map_menu = ttk.OptionMenu(top, sel_map_disp, map_disp[0], *map_disp)
+    map_menu.configure(width=18)
     map_menu["menu"].configure(tearoff=0)
     map_menu.grid(row=0, column=1, sticky="w")
     cur = ttk.Label(top, text="Hien tai: (?, ?)", anchor="e")
@@ -357,7 +397,7 @@ def main():
         if running[0]:
             return
         try:
-            m = int(sel_map.get()); tx = float(ex.get()); ty = float(ey.get())
+            m = sel_map_id.get(); tx = float(ex.get()); ty = float(ey.get())
         except ValueError:
             set_status("Map/X/Y phai la so."); return
         # Tham so da chon sau khi test: 0.1s / 6 unit
