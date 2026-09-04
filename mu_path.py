@@ -49,8 +49,10 @@ def _decode_att(map_num):
     return out
 
 
-def load_grid(map_num, force=False):
-    """Tra ve (grid2d, is_ext) voi grid2d[y][x] = bool walkable."""
+def load_grid(map_num, force=False, safe_margin=1, keep_points=None):
+    """Tra ve (grid2d, is_ext) voi grid2d[y][x] = bool walkable.
+    safe_margin: cach chuong ngai vat toi thieu N tile (mac dinh 1) de tranh bi kem.
+    keep_points: cac (x,y) luon giu walkable (vd start/goal cua nhan vat)."""
     cache = os.path.join(CACHE, f"World{map_num}.json")
     if force or not os.path.exists(cache):
         cache = _decode_att(map_num)
@@ -60,13 +62,48 @@ def load_grid(map_num, force=False):
     for i, v in enumerate(g):
         y, x = divmod(i, N)
         walk[y][x] = (int(v) & BLOCK) == 0
+    if safe_margin > 0:
+        walk = make_safe(walk, safe_margin, keep=keep_points)
     return walk, d.get("isExt", False)
 
 
+def make_safe(walk, margin=1, keep=None):
+    """Tra ve grid moi voi cac o CACH chuong ngai vat 'margin' tile tro len bi loai bo.
+    Muc dich: duong di khong sat tuong -> han che bi kem/vuong khi click thuc te.
+    O chi di duoc neu no walkable VA khong co o block nao trong ban kinh 'margin'.
+    keep: tap cac (x,y) LUON duoc giu walkable (vi du start/goal cua nhan vat)."""
+    keep = set(keep or [])
+    N = len(walk)
+    safe = [[False] * N for _ in range(N)]
+    for y in range(N):
+        for x in range(N):
+            if not walk[y][x]:
+                continue
+            if (x, y) in keep:
+                safe[y][x] = True
+                continue
+            blocked = False
+            for dy in range(-margin, margin + 1):
+                for dx in range(-margin, margin + 1):
+                    nx, ny = x + dx, y + dy
+                    if not (0 <= nx < N and 0 <= ny < N):
+                        continue
+                    if not walk[ny][nx]:
+                        blocked = True
+                        break
+                if blocked:
+                    break
+            safe[y][x] = not blocked
+    return safe
+
+
 def astar(walk, start, goal):
-    """A* tren grid 256x256. start/goal = (x,y) tile. Tra ve list[(x,y)] (ke ca goal)."""
+    """A* tren grid 256x256. start/goal = (x,y) tile. Tra ve list[(x,y)] (ke ca goal).
+    Dung heuristic octile (admissible cho di chuyen 8 huong, duong cheo = sqrt2) nen
+    dam bao tim duoc DUONG NGAN NHAT."""
     def h(a, b):
-        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+        dx = abs(a[0] - b[0]); dy = abs(a[1] - b[1])
+        return (dx + dy) + (math.sqrt(2) - 2) * min(dx, dy)
     def neighbors(x, y):
         for dx, dy in ((1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)):
             nx, ny = x + dx, y + dy
