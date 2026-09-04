@@ -255,52 +255,88 @@ def main():
     if not avail_maps:
         avail_maps = [1]
 
-    root = tk.Tk()
-    root.title("MU GOTO - den toa do")
-    root.geometry("360x560")
-    sel_map = tk.StringVar(value=str(avail_maps[0]))
-    tk.Label(root, text="Map:").grid(row=0, column=0, padx=8, pady=6)
-    map_menu = tk.OptionMenu(root, sel_map, *[str(x) for x in avail_maps])
-    map_menu.grid(row=0, column=1, padx=8, pady=6, sticky="w")
-    # Toa do X,Y tren cung 1 dong, ben phai input Map
-    tk.Label(root, text="Toa do X:").grid(row=0, column=2, padx=(4,2), pady=6)
-    ex = tk.Entry(root, width=7); ex.grid(row=0, column=3, padx=2, pady=6)
-    tk.Label(root, text="Y:").grid(row=0, column=4, padx=(2,2), pady=6)
-    ey = tk.Entry(root, width=7); ey.grid(row=0, column=5, padx=2, pady=6)
-    cur = tk.Label(root, text="Hien tai: (?, ?)", anchor="w")
-    cur.grid(row=3, column=0, columnspan=2, sticky="ew", padx=8, pady=4)
-    status = tk.Label(root, text="San sang", anchor="w", justify="left")
-    status.grid(row=4, column=0, columnspan=2, sticky="ew", padx=8, pady=6)
+    def stop():
+        running[0] = False
+        set_status("Da dung.")
 
-    # --- Cap nhat toa do hien tai cua nhan vat NGAY KHI APP KHOI DONG ---
-    # Poll moi 200ms, hien thi vao label "Hien tai" de nguoi dung biet vi tri.
+    # ===== THIET KE LAI UI (don gian, hien dai, can giua deu) =====
+    import tkinter.ttk as ttk
+    root = tk.Tk()
+    root.title("MU GOTO - Auto Move")
+    root.geometry("380x540")
+    root.resizable(False, False)
+    root.columnconfigure(0, weight=1)
+    try:
+        ttk.Style().theme_use("clam")
+    except Exception:
+        pass
+    PAD = 8
+
+    # --- Frame tren: Map + Hien tai cung 1 hang ---
+    top = ttk.Frame(root); top.grid(row=0, column=0, padx=PAD, pady=(PAD, 2), sticky="ew")
+    top.columnconfigure(0, weight=0); top.columnconfigure(1, weight=1)
+    ttk.Label(top, text="Map:").grid(row=0, column=0, padx=(0, 4))
+    sel_map = tk.StringVar(value=str(avail_maps[0]))
+    map_menu = ttk.OptionMenu(top, sel_map, avail_maps[0], *[str(x) for x in avail_maps])
+    map_menu.configure(width=8)
+    map_menu["menu"].configure(tearoff=0)
+    map_menu.grid(row=0, column=1, sticky="w")
+    cur = ttk.Label(top, text="Hien tai: (?, ?)", anchor="e")
+    cur.grid(row=0, column=2, padx=(12, 0), sticky="e")
+    top.columnconfigure(2, weight=1)
+
+    # --- Frame toa do X, Y (phia duoi Map) ---
+    cof = ttk.Frame(root); cof.grid(row=1, column=0, padx=PAD, pady=2, sticky="w")
+    ttk.Label(cof, text="Toa do  X:").grid(row=0, column=0, padx=(0, 4))
+    ex = ttk.Entry(cof, width=8); ex.grid(row=0, column=1, padx=2)
+    ttk.Label(cof, text="Y:").grid(row=0, column=2, padx=(8, 4))
+    ey = ttk.Entry(cof, width=8); ey.grid(row=0, column=3, padx=2)
+
+    status = ttk.Label(root, text="San sang", anchor="center")
+    status.grid(row=2, column=0, padx=PAD, pady=4, sticky="ew")
+
+    # --- Cap nhat toa do hien tai NGAY KHI APP KHOI DONG (1s/lan) ---
     LIVE_POS = [None, None]
     def poll_live():
         try:
             x, y = rd_pos(pm)
             if x is not None:
                 LIVE_POS[0], LIVE_POS[1] = x, y
-                cur.config(text=f"Hien tai: ({x:.1f}, {y:.1f})")
+                cur.config(text=f"Hien tai: ({int(x)}, {int(y)})")
         except Exception:
             pass
-        root.after(200, poll_live)
-    root.after(200, poll_live)
+        root.after(1000, poll_live)
+    root.after(1000, poll_live)
 
-    # Danh sach cac diem tren duong di (toi da 10 dong)
-    tk.Label(root, text="Cac diem (den=xanh, cuoi=do, toi da 10 dong):").grid(
-        row=5, column=0, columnspan=2, sticky="w", padx=8)
-    logbox = tk.Listbox(root, height=10, width=44)
-    logbox.grid(row=6, column=0, columnspan=2, padx=8, pady=4)
+    # --- Danh sach diem (toi da 10 dong, co scrollbar) ---
+    ttk.Label(root, text="Cac diem tren duong di (den=xanh, cuoi=do):").grid(
+        row=3, column=0, padx=PAD, pady=(6, 2), sticky="w")
+    lf = ttk.Frame(root); lf.grid(row=4, column=0, padx=PAD, pady=2, sticky="nsew")
+    root.rowconfigure(4, weight=1)
+    logbox = tk.Listbox(lf, height=10, width=42, relief="flat",
+                        highlightthickness=1, borderwidth=1)
+    logbox.pack(side="left", fill="both", expand=True)
+    scroll = ttk.Scrollbar(lf, orient="vertical", command=logbox.yview)
+    scroll.pack(side="right", fill="y")
+    logbox.config(yscrollcommand=scroll.set)
 
-    # Tick chon gui phim khi den noi
-    tk.Label(root, text="Gui phim khi den noi:").grid(
-        row=7, column=0, columnspan=2, sticky="w", padx=8)
+    # --- Tick chon gui phim khi den noi (can giua, deu) ---
+    cf = ttk.Frame(root); cf.grid(row=5, column=0, padx=PAD, pady=4, sticky="ew")
+    cf.columnconfigure(0, weight=1); cf.columnconfigure(1, weight=1)
     do_home = tk.BooleanVar(value=False)
     do_ctrl_f = tk.BooleanVar(value=False)
-    tk.Checkbutton(root, text="Helper (Nhan Home)", variable=do_home).grid(
-        row=8, column=0, sticky="w", padx=8)
-    tk.Checkbutton(root, text="Giam tai (Ctrl+F)", variable=do_ctrl_f).grid(
-        row=8, column=1, sticky="w", padx=8)
+    ttk.Checkbutton(cf, text="Helper (Home)", variable=do_home).grid(
+        row=0, column=0, padx=4, sticky="e")
+    ttk.Checkbutton(cf, text="Giam tai (Ctrl+F)", variable=do_ctrl_f).grid(
+        row=0, column=1, padx=4, sticky="w")
+
+    # --- Nut OK / STOP (can giua, cung kich thuoc) ---
+    bf = ttk.Frame(root); bf.grid(row=6, column=0, padx=PAD, pady=(4, PAD), sticky="ew")
+    bf.columnconfigure(0, weight=1); bf.columnconfigure(1, weight=1)
+    ttk.Button(bf, text="OK - Di toi", command=lambda: threading.Thread(target=goto, daemon=True).start()).grid(
+        row=0, column=0, padx=6, sticky="ew")
+    ttk.Button(bf, text="STOP", command=stop).grid(
+        row=0, column=1, padx=6, sticky="ew")
 
     def set_status(m):
         root.after(0, lambda: status.config(text=m))
@@ -308,9 +344,7 @@ def main():
     def log_add(text, done=False, color=None):
         root.after(0, lambda: _log_add(text, done, color))
     def _log_add(text, done, color):
-        # Gioi han toi da 10 dong: xoa dong cu nhat neu vuot
-        if logbox.size() >= 10:
-            logbox.delete(0)
+        # Khong gioi han so dong: thanh cuon (scrollbar) de xem tiep.
         idx = logbox.size()
         logbox.insert(tk.END, text)
         if color:
@@ -330,12 +364,12 @@ def main():
         click_interval = 0.1
         mov_ahead = 6.0
         running[0] = True
-        set_status(f"Load map {m}...")
-        # Uu tien toa do da duoc poll truc tiep tu khi app khoi dong (LIVE_POS)
-        if LIVE_POS[0] is not None:
-            x0, y0 = LIVE_POS[0], LIVE_POS[1]
-        else:
-            x0, y0 = rd_pos(pm)
+        set_status("Click tam man hinh de cap nhat toa do...")
+        # Click vao TRUNG TAM man hinh (tam nhan vat) de ep game cap nhat toa do,
+        # sau do moi doc toa do that va tinh duong di.
+        click_at(cx_screen, cy_screen, right=False)
+        time.sleep(1.0)
+        x0, y0 = rd_pos(pm)
         if x0 is None:
             set_status("Mat ket noi game. Admin + game mo."); running[0] = False; return
         # Tinh tile start/goal truoc de giu nguyen walkable (khong bi margin loai)
@@ -376,12 +410,9 @@ def main():
         wp_lines = {}   # wp_index -> line_index trong logbox
         def reveal_wp(i, color):
             def _do():
-                if logbox.size() >= 10:
-                    logbox.delete(0)
-                    for k in list(wp_lines.keys()):
-                        wp_lines[k] -= 1
-                        if wp_lines[k] < 0:
-                            del wp_lines[k]
+                # Khong gioi han so dong (co scrollbar). Moi diem 1 dong duy nhat.
+                if i in wp_lines and 0 <= wp_lines[i] < logbox.size():
+                    return  # diem da hien thi roi (tranh trung lap sau khi ve lai duong)
                 idx = logbox.size()
                 tag = " (DICH CUOI)" if i == n_wp - 1 else ""
                 logbox.insert(tk.END, f"  Diem {i+1}/{n_wp}: ({wps[i][0]:.0f},{wps[i][1]:.0f}){tag}")
@@ -410,6 +441,17 @@ def main():
         MIN_AIM = 1.0      # neu aim cach nhan vat < 1 unit -> bo qua click (tranh click giua man hinh)
         START_AHEAD = 1.5  # AHEAD nho hon o lan click dau de khong vang xa duong di
         POLL = 0.03
+        # Khoang cach click (pixel tu tam) - khi bi kem vat can se tang gấp 2,3,4,5,6.
+        BASE_CD = 40.0
+        FACTORS = [2, 3, 4, 5, 6]          # tang gấp 2 roi 3,4,5,6
+        click_dist = BASE_CD
+        max_dist = min(W, H)               # khong vuot qua ca cua so game
+        stuck_active = [False]             # flag KEM keo dai den khi nhan vat thuc su di chuyen
+        stuck_count = 0
+        escalate_t = [-10.0]               # thoi diem tang muc do kem gan nhat
+        plan2 = [False]                    # True = da chuyen phuong an 2 (di nguoc duong cu)
+        BACK_N = 6                         # so diem lui lai khi phuong an 2
+        passed = [(x0, y0)]                # cac diem da di qua (de lui nguoc)
 
         last_click_pos = (x0, y0)
         last_click_t = -10.0
@@ -432,48 +474,97 @@ def main():
                 if moved > 0.1:
                     last_move_t = now
                     last_pos = (x, y)
+                    # nhan vat thuc su di chuyen -> thoat kem, reset ve mac dinh
+                    if stuck_active[0]:
+                        stuck_active[0] = False
+                        click_dist = BASE_CD
+                        stuck_count = 0
+                        plan2[0] = False
+                        log_add("  Da thoat kem, tiep tuc di binh thuong.")
 
-                # --- Phat hien KET (stuck): 2s toa do khong doi -> ve duong moi ---
+                # --- Phat hien KET (stuck): 2s toa do khong doi -> bat co kem ---
                 if now - last_move_t > STUCK_T:
+                    if not stuck_active[0]:
+                        stuck_active[0] = True
+                        stuck_count = 0
+                        escalate_t[0] = now
+                        log_add(f"  BI KET tai ({x:.1f},{y:.1f}): bat co xu ly kem.")
                     cur_tile = mu_path.coord_to_tile(x, y)
-                    log_add(f"  BI KET tai ({x:.1f},{y:.1f}) -> tim duong vong...")
-                    # Block tam thoi vung hien tai, bat buoc di vong qua
-                    new_path = mu_path.replan(walk, cur_tile,
-                                              mu_path.coord_to_tile(tx, ty),
-                                              blocked=cur_tile, radius=3)
-                    if new_path and len(new_path) >= 2:
-                        wps[:] = [mu_path.tile_to_coord(*p) for p in new_path]
-                        n_wp = len(wps)
-                        wp_idx[0] = 0
-                        # Xoa log diem cu, hien duong moi tu dau
-                        logbox.delete(0, tk.END)
-                        wp_lines.clear()
-                        reveal_wp(0, None)
-                        log_add(f"  Duong moi: {n_wp} diem (tranh ({x:.0f},{y:.0f}))")
-                        set_status(f"Da ve duong vong ({n_wp} diem)")
-                    else:
-                        log_add("  Khong tim duoc duong vong, thu grid goc...")
-                        try:
-                            walk0, _ = mu_path.load_grid(m, safe_margin=0, keep_points=[cur_tile, mu_path.coord_to_tile(tx, ty)])
-                            new_path = mu_path.replan(walk0, cur_tile,
-                                                      mu_path.coord_to_tile(tx, ty),
-                                                      blocked=cur_tile, radius=3)
-                        except Exception:
-                            new_path = None
-                        if new_path and len(new_path) >= 2:
-                            wps[:] = [mu_path.tile_to_coord(*p) for p in new_path]
-                            n_wp = len(wps)
-                            wp_idx[0] = 0
-                            logbox.delete(0, tk.END)
-                            wp_lines.clear()
-                            reveal_wp(0, None)
-                            walk = walk0
-                            log_add(f"  Duong moi (grid goc): {n_wp} diem")
-                            set_status(f"Da ve duong vong (grid goc, {n_wp} diem)")
+                    goal_tile = mu_path.coord_to_tile(tx, ty)
+                    # Moi STUCK_T giay se tang 1 muc (x2,3,4,5,6) hoac chuyen phuong an 2.
+                    if now - escalate_t[0] >= STUCK_T:
+                        escalate_t[0] = now
+                        stuck_count += 1
+                        if not plan2[0] and stuck_count <= len(FACTORS):
+                            # PHUONG AN 1: tang gap 2,3,4,5,6 khoang cach click (toi da ca cua so)
+                            factor = FACTORS[stuck_count - 1]
+                            click_dist = min(BASE_CD * factor, max_dist)
+                            log_add(f"  KEM #{stuck_count}: tang click_dist x{factor} = {click_dist:.0f}px")
+                            fb = max(0, wp_idx[0] - 1)
+                            start_tile = mu_path.coord_to_tile(*wps[fb])
+                            # Block vung quanh vi tri kem, bat buoc di vong qua
+                            new_path = mu_path.replan(walk, start_tile, goal_tile,
+                                                      blocked=cur_tile, radius=4)
+                            if new_path and len(new_path) >= 2:
+                                wps[:] = [mu_path.tile_to_coord(*p) for p in new_path]
+                                n_wp = len(wps); wp_idx[0] = 0
+                                logbox.delete(0, tk.END); wp_lines.clear(); reveal_wp(0, None)
+                                log_add(f"  Duong vong tu diem {fb+1}: {n_wp} diem (tranh {cur_tile})")
+                                set_status(f"Da ve duong vong ({n_wp} diem)")
+                            else:
+                                log_add("  Khong tim duoc, thu grid goc...")
+                                try:
+                                    walk0, _ = mu_path.load_grid(m, safe_margin=0, keep_points=[start_tile, goal_tile])
+                                    new_path = mu_path.replan(walk0, start_tile, goal_tile,
+                                                              blocked=cur_tile, radius=4)
+                                except Exception:
+                                    new_path = None
+                                if new_path and len(new_path) >= 2:
+                                    wps[:] = [mu_path.tile_to_coord(*p) for p in new_path]
+                                    n_wp = len(wps); wp_idx[0] = 0
+                                    logbox.delete(0, tk.END); wp_lines.clear(); reveal_wp(0, None)
+                                    walk = walk0
+                                    log_add(f"  Duong vong (grid goc): {n_wp} diem")
+                                    set_status(f"Da ve duong vong (grid goc, {n_wp} diem)")
+                                else:
+                                    log_add("  Van kem: tiep tuc thu hoac nhan Space de dung.")
                         else:
-                            log_add("  Van kem: tiep tuc cho hoac nhan Space de dung.")
-                    last_move_t = now  # reset de tranh replan lien tuc
-                    last_pos = (x, y)
+                            # PHUONG AN 2: di nguoc lai duong cu da di, roi tim duong vong
+                            plan2[0] = True
+                            rev = list(reversed(passed))
+                            back_pts = rev[1:1 + BACK_N]   # cac diem da di (bo vi tri hien tai)
+                            if back_pts:
+                                back_tiles = [mu_path.coord_to_tile(*p) for p in back_pts]
+                                far_tile = back_tiles[-1]
+                                detour = mu_path.replan(walk, far_tile, goal_tile,
+                                                        blocked=cur_tile, radius=4)
+                                if detour and len(detour) >= 2:
+                                    full = back_tiles + detour[1:]
+                                    wps[:] = [mu_path.tile_to_coord(*p) for p in full]
+                                    n_wp = len(wps); wp_idx[0] = 0
+                                    logbox.delete(0, tk.END); wp_lines.clear(); reveal_wp(0, None)
+                                    log_add(f"  PHUONG AN 2: lui {len(back_tiles)} diem + duong vong {len(detour)} diem")
+                                    set_status(f"Phuong an 2: lui {len(back_tiles)} diem roi vong")
+                                else:
+                                    log_add("  PHUONG AN 2: thu grid goc...")
+                                    try:
+                                        walk0, _ = mu_path.load_grid(m, safe_margin=0, keep_points=[far_tile, goal_tile])
+                                        detour = mu_path.replan(walk0, far_tile, goal_tile,
+                                                                blocked=cur_tile, radius=4)
+                                    except Exception:
+                                        detour = None
+                                    if detour and len(detour) >= 2:
+                                        full = back_tiles + detour[1:]
+                                        wps[:] = [mu_path.tile_to_coord(*p) for p in full]
+                                        n_wp = len(wps); wp_idx[0] = 0
+                                        logbox.delete(0, tk.END); wp_lines.clear(); reveal_wp(0, None)
+                                        walk = walk0
+                                        log_add(f"  PHUONG AN 2 (grid goc): lui {len(back_tiles)} + vong {len(detour)}")
+                                        set_status("Phuong an 2 (grid goc)")
+                                    else:
+                                        log_add("  PHUONG AN 2 that bai: cho hoac nhan Space.")
+                            else:
+                                log_add("  Khong co duong cu de lui: nhan Space de dung.")
 
                 # chuyen sang waypoint A* ke tiep neu da den waypoint hien tai
                 while (wp_idx[0] < len(wps) - 1 and
@@ -482,6 +573,7 @@ def main():
                     wp_idx[0] += 1
                     # To xanh diem vua den, roi hien diem ke tiep (den / do neu la diem cuoi)
                     mark_done(reached)
+                    passed.append(tuple(wps[reached]))   # ghi nhan diem da di qua (de lui nguoc)
                     nxt = wp_idx[0]
                     reveal_wp(nxt, "red" if nxt == n_wp - 1 else None)
 
@@ -514,31 +606,47 @@ def main():
                 if wp_idx[0] >= len(wps) - 1:
                     tx_seg, ty_seg = tx, ty
 
-                # diem dich phia truoc tren duong thang toi waypoint, cach AHEAD
-                # (lan click dau dung START_AHEAD nho hon de khong vang xa duong di)
-                ahead_now = START_AHEAD if step_no[0] == 0 else AHEAD
+                # Huong click: binh thuong ve phia waypoint hien tai; khi BI KET that su
+                # (stuck_active) thi lui nguoc LAI duong cu (diem da di truoc do) de thoat kem.
                 dseg = math.hypot(tx_seg - x, ty_seg - y)
-                if dseg <= ahead_now:
-                    aim_x, aim_y = tx_seg, ty_seg
+                if stuck_active[0]:
+                    # lui ve diem da di truoc gan nhat (tu passed), bat ke wp_idx
+                    aim_x, aim_y = passed[-1] if len(passed) >= 1 else (x0, y0)
+                    if len(passed) >= 2:
+                        aim_x, aim_y = passed[-2]
                 else:
-                    k = ahead_now / dseg
-                    aim_x = x + (tx_seg - x) * k
-                    aim_y = y + (ty_seg - y) * k
+                    # diem dich phia truoc tren duong thang toi waypoint, cach AHEAD
+                    ahead_now = START_AHEAD if step_no[0] == 0 else AHEAD
+                    if dseg <= ahead_now:
+                        aim_x, aim_y = tx_seg, ty_seg
+                    else:
+                        k = ahead_now / dseg
+                        aim_x = x + (tx_seg - x) * k
+                        aim_y = y + (ty_seg - y) * k
 
-                # neu aim gan nhan vat qua muc (da den waypoint, sap chuyen diem)
-                # -> bo qua click de tranh click chet giua man hinh, cho chuyen WP
+                # pixel delta tu tam den aim QUA MA TRAN (chinh xac nhu ban da chay tot)
+                dx_px = inv[0][0] * (aim_x - x) + inv[0][1] * (aim_y - y)
+                dy_px = inv[1][0] * (aim_x - x) + inv[1][1] * (aim_y - y)
+                if stuck_active[0]:
+                    # BI KET that su: dung khoang cach click da tang (x2..x6) tu tam,
+                    # huong nguoc lai duong cu de ep thoat vat can.
+                    pw = math.hypot(dx_px, dy_px)
+                    if pw > 1e-6:
+                        nx, ny = dx_px / pw, dy_px / pw
+                        cd = min(click_dist, max_dist)
+                        dx_px, dy_px = nx * cd, ny * cd
+                click_x = max(L + 10, min(L + W - 10, cx_screen + dx_px))
+                click_y = max(T + 10, min(T + H - 10, cy_screen + dy_px))
+
+                # neu dich (waypoint) gan nhan vat qua muc -> bo qua click, cho chuyen WP
                 if dseg < MIN_AIM:
                     time.sleep(POLL)
                     continue
 
                 moved_since = math.hypot(x - last_click_pos[0], y - last_click_pos[1])
-                stuck = (now - last_move_t > STUCK_T)
+                stuck = stuck_active[0] or (now - last_move_t > STUCK_T)
                 if (now - last_click_t >= CLICK_INTERVAL or moved_since >= MOV_AHEAD
                         or stuck) and now - last_click_t >= MIN_GAP:
-                    dx_px = inv[0][0] * (aim_x - x) + inv[0][1] * (aim_y - y)
-                    dy_px = inv[1][0] * (aim_x - x) + inv[1][1] * (aim_y - y)
-                    click_x = max(L + 10, min(L + W - 10, cx_screen + dx_px))
-                    click_y = max(T + 10, min(T + H - 10, cy_screen + dy_px))
                     step_no[0] += 1
                     click_at(click_x, click_y, right=False)
                     last_click_pos = (x, y)
@@ -556,12 +664,6 @@ def main():
         finally:
             running[0] = False
 
-    def stop():
-        running[0] = False
-        set_status("Da dung.")
-
-    tk.Button(root, text="OK - Di toi", command=lambda: threading.Thread(target=goto, daemon=True).start()).grid(row=9, column=0, pady=8)
-    tk.Button(root, text="STOP", command=stop).grid(row=9, column=1, pady=8)
     root.mainloop()
 
 

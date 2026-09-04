@@ -58,9 +58,17 @@ Vòng lặp di chuyển (cadence-click):
   - chọn waypoint A* phía trước, giữ 1 điểm "aim" ~4 unit trước mặt
   - chuyển delta world → delta pixel qua ma trận A⁻¹
   - click trái (SetCursorPos + mouse_event) tại tâm + offset
-  - click nhịp 0.30s / hoặc khi đi được 1.5u / hoặc bị kẹt 2s
-  - tới waypoint → chuyển waypoint kế (log đổi xanh)
-  - tới đích (cách <1.5u) → "DEN NOI"
+  - click nhịp 0.1s (hoặc khi đi được MOV_AHEAD=6u) để đi mượt
+  - tới waypoint → chuyển waypoint kế (log đổi xanh), tới đích (cách <1.5u) → "DEN NOI"
+  - **Xử lý kẹt (stuck)**: nếu 2s toạ độ không đổi → bật cờ `stuck_active` và:
+      * Phương án 1: tăng khoảng cách click gấp 2,3,4,5,6 (cap = toàn bộ cửa sổ),
+        đồng thời nhắm **ngược lại đường cũ đã đi** để ép thoát vật cản, rồi
+        `replan` vòng qua tọa độ bị kẹt (block bán kính 4 tile).
+      * Phương án 2 (hết 6 bậc vẫn kẹt): lui lại `BACK_N=6` điểm trên đường cũ,
+        sau đó `replan` tìm đường vòng sang đích. Nếu vẫn không được → thử grid gốc
+        (bỏ safe-margin).
+      * Khi nhân vật thực sự di chuyển (`moved>0.1`) → thoát kẹt, reset về mặc định.
+  - Log không giới hạn dòng, có thanh cuộn dọc để theo dõi toàn bộ quá trình.
 ```
 
 ### Chi tiết từng phần
