@@ -23,6 +23,17 @@ PROCESS_NAME = "main.exe"
 CUR_X = 0xB80AF60
 CUR_Y = 0xB80AF64
 CALIB_FILE = "mu_goto_calib.json"
+ERR_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mu_goto_errors.log")
+
+
+def log_err(msg):
+    """Ghi log loi ra file (de debug cac map khong dung duoc)."""
+    try:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(ERR_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
 
 # Ten map S21 (id -> ten). Dung de hien thi ten thay vi so ID trong dropdown.
 # Lay tu mu_epic_gallery.py; them/bot tuy y.
@@ -372,11 +383,13 @@ def main():
 
     # --- Nut OK / STOP (can giua, cung kich thuoc) ---
     bf = ttk.Frame(root); bf.grid(row=6, column=0, padx=PAD, pady=(4, PAD), sticky="ew")
-    bf.columnconfigure(0, weight=1); bf.columnconfigure(1, weight=1)
+    bf.columnconfigure(0, weight=1); bf.columnconfigure(1, weight=1); bf.columnconfigure(2, weight=1)
     ttk.Button(bf, text="OK - Di toi", command=lambda: threading.Thread(target=goto, daemon=True).start()).grid(
-        row=0, column=0, padx=6, sticky="ew")
+        row=0, column=0, padx=4, sticky="ew")
+    ttk.Button(bf, text="Tinh toan", command=lambda: threading.Thread(target=calculate, daemon=True).start()).grid(
+        row=0, column=1, padx=4, sticky="ew")
     ttk.Button(bf, text="STOP", command=stop).grid(
-        row=0, column=1, padx=6, sticky="ew")
+        row=0, column=2, padx=4, sticky="ew")
 
     def set_status(m):
         root.after(0, lambda: status.config(text=m))
@@ -419,6 +432,7 @@ def main():
             walk, is_ext = mu_path.load_grid(m, keep_points=[s0, g0])
         except Exception as e:
             set_status(f"Loi load map {m}: {e}")
+            log_err(f"[goto] Loi load map {m}: {e}")
             running[0] = False; return
         set_status(f"Di toi map{m} ({tx:.0f},{ty:.0f}) bang A*...")
         sx, sy = mu_path.nearest_walkable(walk, *s0) or s0
@@ -439,6 +453,7 @@ def main():
             path = mu_path.astar(walk0, (sx0, sy0), (gx0, gy0))
             if not path or len(path) < 2:
                 set_status(f"Khong tim duoc duong toi ({tx:.0f},{ty:.0f}). Co the bi ket boi tuong.")
+                log_err(f"[goto] Map {m}: khong tim duoc duong den ({tx:.0f},{ty:.0f})")
                 running[0] = False; return
             walk = walk0  # su dung grid goc de di (khong dam bao cach tuong)
         # chuyen waypoint tile -> toa do world (tam tile)
@@ -703,6 +718,80 @@ def main():
             set_status(f"Loi: {e}")
         finally:
             running[0] = False
+
+    def calculate():
+        """Tinh truoc duong di (khong click, khong di): in tat ca cac buoc,
+        sau do lan luot sang tung diem (den -> xanh) va cuon log theo dong sang."""
+        if running[0]:
+            return
+        try:
+            m = sel_map_id.get(); tx = float(ex.get()); ty = float(ey.get())
+        except ValueError:
+            set_status("Map/X/Y phai la so."); return
+        running[0] = True
+        set_status("Tinh toan duong di (dry-run)...")
+        try:
+            x0, y0 = rd_pos(pm)
+        except Exception:
+            x0, y0 = None, None
+        if x0 is None:
+            # Khong doc duoc vi tri that -> gio lap tam de van xem duoc duong di
+            x0, y0 = mu_path.tile_to_coord(*mu_path.coord_to_tile(tx, ty))
+            log_add("  (Khong doc duoc vi tri nhan vat -> chi xem duong di den dich)")
+        s0 = mu_path.coord_to_tile(x0, y0)
+        g0 = mu_path.coord_to_tile(tx, ty)
+        try:
+            walk, _ = mu_path.load_grid(m, keep_points=[s0, g0])
+        except Exception as e:
+            set_status(f"Loi load map {m}: {e}")
+            log_err(f"[calculate] Loi load map {m}: {e}")
+            running[0] = False; return
+        sx, sy = mu_path.nearest_walkable(walk, *s0) or s0
+        gx, gy = mu_path.nearest_walkable(walk, *g0) or g0
+        if (gx, gy) != g0:
+            log_add(f"  Dich ({tx:.0f},{ty:.0f}) la tuong -> snap ({gx},{gy})")
+        path = mu_path.astar(walk, (sx, sy), (gx, gy))
+        if not path or len(path) < 2:
+            log_add("  Thu lai tren grid goc (bo margin)...")
+            try:
+                walk0, _ = mu_path.load_grid(m, safe_margin=0, keep_points=[s0, g0])
+            except Exception:
+                walk0 = walk
+            sx0, sy0 = mu_path.nearest_walkable(walk0, *s0) or s0
+            gx0, gy0 = mu_path.nearest_walkable(walk0, *g0) or g0
+            path = mu_path.astar(walk0, (sx0, sy0), (gx0, gy0))
+            if not path or len(path) < 2:
+                set_status(f"Khong tim duoc duong toi ({tx:.0f},{ty:.0f}). Co the bi ket boi tuong.")
+                log_err(f"[calculate] Map {m}: khong tim duoc duong den ({tx:.0f},{ty:.0f})")
+                running[0] = False; return
+        wps = [mu_path.tile_to_coord(*p) for p in path]
+        n_wp = len(wps)
+        log_add(f"  Bat dau: ({x0:.0f},{y0:.0f})  ->  Dich: ({tx:.0f},{ty:.0f})  | {n_wp} diem")
+        log_add(f"  Tile: ({s0[0]},{s0[1]}) -> ({g0[0]},{g0[1]})")
+        # In tat ca cac buoc, dau tien mau xam (chua di toi)
+        line_idx = []
+        for i, (wx, wy) in enumerate(wps):
+            tag = " (DICH CUOI)" if i == n_wp - 1 else ""
+            idx = logbox.size()
+            logbox.insert(tk.END, f"  [{i+1:>3}/{n_wp}] ({wx:.0f},{wy:.0f}){tag}")
+            logbox.itemconfig(idx, fg="#888")
+            line_idx.append(idx)
+        logbox.see(tk.END)
+        set_status(f"Da tinh {n_wp} diem. Dang chay anh sang...")
+        # Lan luot sang tung diem: den -> xanh, va cuon theo dong sang
+        delay = max(20, min(400, int(8000 / n_wp)))   # ms / diem, gioi han 20-400ms
+        def light(i):
+            if not running[0] or i >= n_wp:
+                if running[0]:
+                    set_status(f"Xong: da chay het {n_wp} diem (dry-run).")
+                running[0] = False
+                return
+            idx = line_idx[i]
+            if 0 <= idx < logbox.size():
+                logbox.itemconfig(idx, fg="green")
+                logbox.see(idx)
+            root.after(delay, lambda: light(i + 1))
+        root.after(delay, lambda: light(0))
 
     root.mainloop()
 

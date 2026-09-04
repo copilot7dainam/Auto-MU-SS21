@@ -1,21 +1,20 @@
 # Python
 __pycache__/
 *.pyc
-*.pyo
-coords.cache
 
-# OS
-Thumbs.db
-.DS_Store
-
-# Editor
+# Editor / OS
 .vscode/
 .idea/
+Thumbs.db
+Desktop.ini
 
-# Node
+# Local logs & backups
+*.log
+*.bak
+
+# Cached decryption scratch (keep _grid_cache/*.json & World*/grid.json — they are data)
+gfxdec_src/_gen_ciphers.js
+
+# Node build artifacts (if any)
 node_modules/
-gfxdec_src/node_modules/
-
-# Runtime
-*.cache
-__pycache__/
+gfxdec_src/dist/
