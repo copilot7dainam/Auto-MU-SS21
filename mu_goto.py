@@ -313,11 +313,11 @@ def main():
 
     running = [False]
     # --- Danh sach map tu map_index.json (ten + file grid tuong ung) ---
-    avail_maps = []   # list of (num, name)
+    avail_maps = []   # list of (id, name)  id = MapID 0-based
     for m in mu_path.MAP_INDEX:
-        avail_maps.append((m["num"], m.get("name", "")))
+        avail_maps.append((m["id"], m.get("name", "")))
     if not avail_maps:
-        avail_maps = [(1, "")]
+        avail_maps = [(0, "")]
 
     # Sap xep: map co ten len truoc (World tang dan), khong ten nam cuoi.
     avail_maps.sort(key=lambda t: (0, t[0]) if t[1] else (1, t[0]))
