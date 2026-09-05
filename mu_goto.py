@@ -15,6 +15,7 @@ Su dung: python mu_goto.py
 """
 import sys, os, time, math, json, ctypes, ctypes.wintypes as wt, threading
 import tkinter as tk
+import tkinter.ttk as ttk
 import pymem, pymem.process
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mu_path
@@ -24,6 +25,33 @@ CUR_X = 0xB80AF60
 CUR_Y = 0xB80AF64
 CALIB_FILE = "mu_goto_calib.json"
 ERR_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mu_goto_errors.log")
+SPOTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mu_goto_spots.json")
+
+
+def load_spots():
+    """Doc train spot da luu tu lan truoc: {token: [[token,name,x,y], ...]}."""
+    if not os.path.exists(SPOTS_FILE):
+        return {}
+    try:
+        d = json.load(open(SPOTS_FILE, encoding="utf-8"))
+        out = {}
+        for key, lst in d.items():
+            # key = token /move (string). Tuple cu: (tok, name, x, y).
+            out[str(key)] = [(str(key), n, int(x), int(y)) for (_, n, x, y) in lst]
+        return out
+    except Exception:
+        return {}
+
+
+def save_spots_all(spots):
+    """Ghi toan bo train spot ra file de tai su dung lan sau."""
+    try:
+        json.dump({tok: [[tok, n, x, y] for (tok, n, x, y) in lst]
+                   for tok, lst in spots.items()},
+                  open(SPOTS_FILE, "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 
 def log_err(msg):
@@ -59,6 +87,32 @@ WORLD_ID_NAMES = {
 # Offset World ID trong main.exe (EpicMU Part2 / IGCN S21, base + offset).
 OFF_MAP = 0x19D85DC
 
+# Danh sach lenh /move hoat dong tren server (user xac nhan). Thu tu DUNG nhu
+# user liet ke. Moi phan tu: (token /move, MapID 0-based tuong ung de load grid).
+# Khi den map khac voi map hien tai, gui /move tuong ung, cho load xong moi tinh duong.
+# Cac phien ban "2/3/.." la cung 1 ban do (chung MapID) nen dung chung grid.
+MOVE_COMMANDS = [
+    ("Lorencia", 0), ("Noria", 3), ("Devias", 2), ("Devias2", 2), ("Devias3", 2),
+    ("Devias4", 2), ("Dungeon", 1), ("Dungeon2", 1), ("Dungeon3", 1),
+    ("Losttower", 4), ("Losttower2", 4), ("Losttower3", 4), ("Losttower4", 4),
+    ("Losttower5", 4), ("Losttower6", 4), ("Losttower7", 4),
+    ("Arena", 6), ("Atlans", 7), ("Atlans2", 7), ("Atlans3", 7),
+    ("Tarkan", 8), ("Tarkan2", 8), ("Icarus", 10), ("Aida2", 33), ("Karutan2", 81),
+    ("Crywolf", 34), ("Elbeland", 51), ("Elbeland2", 51), ("Elbeland3", 51),
+    ("Raklion", 57), ("Ferea", 112),
+]
+# token -> MapID (chi nhung co MapID biet de load grid; None = chi de warp).
+_TOKEN_TO_MID = {t: m for (t, m) in MOVE_COMMANDS if m is not None}
+# MapID -> token (de warp tu mot MapID da biet).
+_MID_TO_TOKEN = {m: t for (t, m) in MOVE_COMMANDS if m is not None}
+
+def move_token_for(mid):
+    """Tra ve token /move tuong ung voi MapID, hoac None neu khong co."""
+    return _MID_TO_TOKEN.get(mid)
+
+# 5 map phai chon bang menu M (nguoi dung se huong dan sau). Tam thoi de trong.
+MENU_WARP_MAPS = []
+
 
 def rd_map(pm):
     """Doc World ID map hien tai tu memory. Tra ve int hoac None."""
@@ -87,6 +141,15 @@ def fmt_live(x, y):
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 user32.SetProcessDPIAware()
+# Khai bao argtypes de GetWindowThreadProcessId tra ve thread id dung.
+user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
+user32.GetWindowThreadProcessId.restype = wt.DWORD
+user32.AttachThreadInput.argtypes = [wt.DWORD, wt.DWORD, wt.BOOL]
+user32.AttachThreadInput.restype = wt.BOOL
+user32.VkKeyScanW.argtypes = [wt.WCHAR]
+user32.VkKeyScanW.restype = ctypes.c_short
+user32.MapVirtualKeyW.argtypes = [wt.UINT, wt.UINT]
+user32.MapVirtualKeyW.restype = wt.UINT
 
 # Nguong: den gan dich hon muc nay thi coi nhu den noi (don vi world)
 ARRIVE = 1.5
@@ -168,8 +231,16 @@ def click_at(sx, sy, right=False, hwnd=None):
 
 
 def focus_game():
-    """Dem cua so game len foreground de cac phim gui toi dung game
-    (khong phai cua so Tkinter cua tool)."""
+    """Dem cua so game len foreground de cac phim/chuot gui toi dung game
+    (khong phai cua so Tkinter cua tool).
+
+    Windows chi cho SetForegroundWindow neu tien trinh dang co foreground, nen
+    SetForegroundWindow don thuong thuong that bai. Trick chuan:
+      - AttachThreadInput voi thread foreground hien tai
+      - Gui Alt (VK_MENU) xuong + len de 'unlock' foreground cua tien trinh khac
+      - SetForegroundWindow + ShowWindow(SW_RESTORE)
+      - Detach thread.
+    Tra ve HWND cua cua so game, hoac None neu khong tim thay."""
     procs = pymem.process.list_processes()
     target_pids = {p.th32ProcessID for p in procs
                    if p.szExeFile.decode('utf-8', 'ignore').lower() == PROCESS_NAME.lower()}
@@ -184,13 +255,29 @@ def focus_game():
             GW[0] = hwnd
         return True
     user32.EnumWindows(finder, 0)
-    if GW[0]:
-        # buoc flash truoc (Windows yeu cau app tu flash moi SetForeground duoc)
-        user32.ShowWindow(GW[0], 9)  # SW_RESTORE
-        user32.SetForegroundWindow(GW[0])
+    hwnd = GW[0]
+    if not hwnd:
+        return None
+    try:
+        fg = user32.GetForegroundWindow()
+        cur_thread = kernel32.GetCurrentThreadId()
+        _tp = wt.DWORD()
+        user32.GetWindowThreadProcessId(fg, ctypes.byref(_tp))
+        fg_thread = _tp.value
+        if fg_thread:
+            user32.AttachThreadInput(cur_thread, fg_thread, True)
+        # Alt trick: nhan + tha Menu de tien trinh khac nhuong foreground
+        user32.keybd_event(0x12, 0, 0, 0)   # VK_MENU down
+        time.sleep(0.05)
+        user32.keybd_event(0x12, 0, 0x0002, 0)  # VK_MENU up
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        user32.SetForegroundWindow(hwnd)
         time.sleep(0.10)
-        return GW[0]
-    return None
+        if fg_thread:
+            user32.AttachThreadInput(cur_thread, fg_thread, False)
+    except Exception:
+        pass
+    return hwnd
 
 
 def send_home():
@@ -301,62 +388,162 @@ def main():
         user32.SetForegroundWindow(GW[0])
 
     running = [False]
-    # --- Danh sach map tu map_index.json (ten + file grid tuong ung) ---
-    avail_maps = []   # list of (id, name)  id = MapID 0-based
-    for m in mu_path.MAP_INDEX:
-        avail_maps.append((m["id"], m.get("name", "")))
-    if not avail_maps:
-        avail_maps = [(0, "")]
-
-    # Sap xep: map co ten len truoc (World tang dan), khong ten nam cuoi.
-    avail_maps.sort(key=lambda t: (0, t[0]) if t[1] else (1, t[0]))
-
-    # Hien thi ten map: ("Lorencia (1)", 1) hoac so neu chua dat ten.
-    def map_label(t):
-        nm, mid = t[1], t[0]
-        return f"{nm} ({mid})" if nm else str(mid)
-    map_disp = [map_label(t) for t in avail_maps]
 
     def stop():
         running[0] = False
         set_status("Da dung.")
 
-    # ===== THIET KE LAI UI (don gian, hien dai, can giua deu) =====
-    import tkinter.ttk as ttk
+    # ===== THIET KE LAI UI: danh sach /move | danh sach toa do (co + va x) =====
     root = tk.Tk()
     root.title("MU GOTO - Auto Move")
-    root.geometry("380x540")
+    root.geometry("420x560")
     root.resizable(False, False)
     root.columnconfigure(0, weight=1)
-    sel_map_id = tk.IntVar(value=avail_maps[0][0])
     try:
         ttk.Style().theme_use("clam")
     except Exception:
         pass
     PAD = 8
 
-    # --- Hang 1: Map dropdown (hien 5 dong) ---
-    top = ttk.Frame(root); top.grid(row=0, column=0, padx=PAD, pady=(PAD, 2), sticky="ew")
-    top.columnconfigure(0, weight=0); top.columnconfigure(1, weight=1)
-    def _on_map_sel(*_):
-        i = map_disp.index(sel_map_disp.get())
-        sel_map_id.set(avail_maps[i][0])
-    sel_map_disp = tk.StringVar(value=map_disp[0])
-    sel_map_disp.trace_add("write", _on_map_sel)
-    map_menu = ttk.OptionMenu(top, sel_map_disp, map_disp[0], *map_disp)
-    map_menu.configure(width=22, height=5)   # hien toi da 5 dong
-    map_menu["menu"].configure(tearoff=0)
-    map_menu.grid(row=0, column=0, sticky="w")
+    # luu tru: token /move -> [(token, name, x, y), ...]
+    SPOTS = load_spots()
+    SELECTED_SPOT = [None]   # (token, x, y) duoc chon lam dich
 
-    # --- Hang 2: Ten map + toa do + nut + (luu train spot) ---
-    curf = ttk.Frame(root); curf.grid(row=1, column=0, padx=PAD, pady=2, sticky="ew")
+    def set_status(m):
+        log_add(f"[*] {m}")
+
+    # --- Hang 0: Toa do hien tai ---
+    curf = ttk.Frame(root); curf.grid(row=0, column=0, padx=PAD, pady=(PAD, 4), sticky="ew")
     cur = ttk.Label(curf, text="? (?, ?)", anchor="w")
-    cur.pack(side="left", fill="x", expand=True)
-    btn_add = ttk.Button(curf, text="+", width=3, command=lambda: save_spot())
-    btn_add.pack(side="left", padx=(6, 0))
+    cur.pack(fill="x", expand=True)
 
-    status = ttk.Label(root, text="San sang", anchor="center")
-    status.grid(row=2, column=0, padx=PAD, pady=4, sticky="ew")
+    # --- Hang 1: 2 cot [danh sach /move | danh sach toa do] ---
+    panef = ttk.Frame(root); panef.grid(row=1, column=0, padx=PAD, pady=4, sticky="nsew")
+    panef.columnconfigure(0, weight=1); panef.columnconfigure(1, weight=1)
+    panef.rowconfigure(0, weight=1)
+    root.rowconfigure(1, weight=1)
+
+    # Cot trai: danh sach lenh /move (moi dong co nut +).
+    lf_l = ttk.LabelFrame(panef, text="Lệnh /move (nhấn + để lưu tọa độ map này)")
+    lf_l.grid(row=0, column=0, padx=(0, 4), sticky="nsew")
+    lf_l.rowconfigure(0, weight=1); lf_l.columnconfigure(0, weight=1)
+    mv_can = tk.Canvas(lf_l, highlightthickness=0)
+    mv_can.grid(row=0, column=0, sticky="nsew")
+    mv_sb = ttk.Scrollbar(lf_l, orient="vertical", command=mv_can.yview)
+    mv_sb.grid(row=0, column=1, sticky="ns")
+    mv_can.config(yscrollcommand=mv_sb.set)
+    mv_inner = ttk.Frame(mv_can)
+    mv_can.create_window((0, 0), window=mv_inner, anchor="nw")
+    mv_sel = [0]   # chi muc /move dang chon
+    def _mv_configure(e):
+        mv_can.config(scrollregion=mv_can.bbox("all"))
+    mv_inner.bind("<Configure>", _mv_configure)
+
+    def refresh_move_list():
+        for w in list(mv_inner.children.values()):
+            w.destroy()
+        for i, (tok, mid) in enumerate(MOVE_COMMANDS):
+            row = ttk.Frame(mv_inner)
+            row.pack(fill="x", pady=1)
+            sel = "#d8e6ff" if i == mv_sel[0] else "white"
+            lbl = tk.Label(row, text=f"/move {tok}", anchor="w",
+                           bg=sel, relief="ridge", padx=4)
+            lbl.pack(side="left", fill="x", expand=True)
+            lbl.bind("<Button-1>", lambda e, k=i: pick_move(k))
+            add = ttk.Button(row, text="+", width=3,
+                            command=lambda k=tok: save_spot(k))
+            add.pack(side="right")
+
+    def pick_move(i):
+        mv_sel[0] = i
+        refresh_move_list()
+        refresh_spot_list()
+
+    # Cot phai: danh sach toa do cua /move dang chon (moi dong co nut x).
+    lf_r = ttk.LabelFrame(panef, text="Tọa độ đã lưu")
+    lf_r.grid(row=0, column=1, padx=(4, 0), sticky="nsew")
+    lf_r.rowconfigure(0, weight=1); lf_r.columnconfigure(0, weight=1)
+    sp_can = tk.Canvas(lf_r, highlightthickness=0)
+    sp_can.grid(row=0, column=0, sticky="nsew")
+    sp_sb = ttk.Scrollbar(lf_r, orient="vertical", command=sp_can.yview)
+    sp_sb.grid(row=0, column=1, sticky="ns")
+    sp_can.config(yscrollcommand=sp_sb.set)
+    sp_inner = ttk.Frame(sp_can)
+    sp_can.create_window((0, 0), window=sp_inner, anchor="nw")
+    sp_sel = [None]   # chi muc spot dang chon trong list hien tai
+    def _sp_configure(e):
+        sp_can.config(scrollregion=sp_can.bbox("all"))
+    sp_inner.bind("<Configure>", _sp_configure)
+
+    def cur_token():
+        return MOVE_COMMANDS[mv_sel[0]][0]
+
+    def refresh_spot_list():
+        for w in list(sp_inner.children.values()):
+            w.destroy()
+        lst = SPOTS.get(cur_token(), [])
+        if not lst:
+            tk.Label(sp_inner, text="(chưa có)", anchor="w",
+                     fg="#888", padx=4).pack(fill="x", pady=1)
+            return
+        for i, (tok, nm, x, y) in enumerate(lst):
+            row = ttk.Frame(sp_inner)
+            row.pack(fill="x", pady=1)
+            sel = "#d8e6ff" if sp_sel[0] == i else "white"
+            lbl = tk.Label(row, text=f"{nm} ({x}, {y})", anchor="w",
+                           bg=sel, relief="ridge", padx=4)
+            lbl.pack(side="left", fill="x", expand=True)
+            lbl.bind("<Button-1>", lambda e, k=i: pick_spot(k))
+            delb = ttk.Button(row, text="x", width=3,
+                             command=lambda k=i: delete_spot(k))
+            delb.pack(side="right")
+
+    def pick_spot(i):
+        tok = cur_token()
+        lst = SPOTS.get(tok, [])
+        if 0 <= i < len(lst):
+            sp_sel[0] = i
+            _tok, nm, x, y = lst[i]
+            SELECTED_SPOT[0] = (tok, x, y)
+            set_status(f"Chọn đích: {nm} ({x}, {y})")
+            refresh_spot_list()
+
+    def save_spot(tok):
+        """Luu toa do hien tai vao danh sach cua lenh /move <tok>.
+        Chuyen chon ve dong /move do de hien spot vua luu."""
+        mid = LIVE_MAP[0]
+        if LIVE_POS[0] is None:
+            set_status("Chưa đọc được vị trí nhân vật")
+            return
+        x, y = int(LIVE_POS[0]), int(LIVE_POS[1])
+        nm = live_map_name()
+        SPOTS.setdefault(tok, []).append((tok, nm, x, y))
+        # chon dung dong /move tuong ung
+        for i, (t, _) in enumerate(MOVE_COMMANDS):
+            if t == tok:
+                mv_sel[0] = i; break
+        sp_sel[0] = len(SPOTS[tok]) - 1
+        refresh_move_list(); refresh_spot_list()
+        SELECTED_SPOT[0] = (tok, x, y)
+        save_spots_all(SPOTS)
+        log_add(f"  Đã lưu {tok}: {nm} ({x}, {y})")
+
+    def delete_spot(i):
+        tok = cur_token()
+        lst = SPOTS.get(tok, [])
+        if 0 <= i < len(lst):
+            removed = lst.pop(i)
+            if not lst:
+                SPOTS.pop(tok, None)
+            if sp_sel[0] == i or sp_sel[0] >= len(lst):
+                sp_sel[0] = None
+                SELECTED_SPOT[0] = None
+            save_spots_all(SPOTS)
+            log_add(f"  Đã xóa {tok}: {removed[1]} ({removed[2]}, {removed[3]})")
+            refresh_move_list(); refresh_spot_list()
+
+    refresh_move_list()
+    refresh_spot_list()
 
     # --- Cap nhat toa do hien tai NGAY KHI APP KHOI DONG (1s/lan) ---
     LIVE_POS = [None, None]
@@ -365,64 +552,27 @@ def main():
             x, y = rd_pos(pm)
             if x is not None:
                 LIVE_POS[0], LIVE_POS[1] = x, y
-                mid = rd_map(pm)
-                LIVE_MAP[0] = mid
+                LIVE_MAP[0] = rd_map(pm)
                 cur.config(text=fmt_live(x, y))
         except Exception:
             pass
         root.after(1000, poll_live)
     root.after(1000, poll_live)
 
-    # --- Danh sach diem tren duong di (toi da 10 dong, co scrollbar) ---
-    ttk.Label(root, text="Cac diem tren duong di (den=xanh, cuoi=do):").grid(
+    # --- Danh sach diem tren duong di (10 dong, co scrollbar) ---
+    ttk.Label(root, text="Các điểm trên đường đi (đến=xanh, cuối=đỏ):").grid(
         row=3, column=0, padx=PAD, pady=(6, 2), sticky="w")
     lf = ttk.Frame(root); lf.grid(row=4, column=0, padx=PAD, pady=2, sticky="nsew")
     root.rowconfigure(4, weight=1)
-    logbox = tk.Listbox(lf, height=10, width=42, relief="flat",
+    logbox = tk.Listbox(lf, height=10, width=48, relief="flat",
                         highlightthickness=1, borderwidth=1)
     logbox.pack(side="left", fill="both", expand=True)
     scroll = ttk.Scrollbar(lf, orient="vertical", command=logbox.yview)
     scroll.pack(side="right", fill="y")
     logbox.config(yscrollcommand=scroll.set)
 
-    # --- Danh sach train spot (toi da 5 dong, co scrollbar) ---
-    ttk.Label(root, text="Train spot (luu bang +):").grid(
-        row=5, column=0, padx=PAD, pady=(6, 2), sticky="w")
-    sf = ttk.Frame(root); sf.grid(row=6, column=0, padx=PAD, pady=2, sticky="nsew")
-    spotbox = tk.Listbox(sf, height=5, width=42, relief="flat",
-                         highlightthickness=1, borderwidth=1)
-    spotbox.pack(side="left", fill="both", expand=True)
-    sscroll = ttk.Scrollbar(sf, orient="vertical", command=spotbox.yview)
-    sscroll.pack(side="right", fill="y")
-    spotbox.config(yscrollcommand=sscroll.set)
-    SPOTS = []   # [(mid, name, x, y)]
-    SELECTED_SPOT = [None]   # (mid, x, y) duoc chon lam dich
-
-    def save_spot():
-        mid = LIVE_MAP[0]
-        if mid is None or LIVE_POS[0] is None:
-            set_status("Chua doc duoc vi tri nhan vat")
-            return
-        x, y = int(LIVE_POS[0]), int(LIVE_POS[1])
-        nm = live_map_name()
-        SPOTS.append((mid, nm, x, y))
-        spotbox.insert(tk.END, f"{nm} ({x}, {y})")
-        spotbox.see(tk.END)
-        log_add(f"  Da luu train spot: {nm} ({x}, {y})")
-
-    def on_spot_select(evt):
-        sel = spotbox.curselection()
-        if not sel:
-            return
-        idx = sel[0]
-        if 0 <= idx < len(SPOTS):
-            mid, nm, x, y = SPOTS[idx]
-            SELECTED_SPOT[0] = (mid, x, y)
-            set_status(f"Chon dich: {nm} ({x}, {y})")
-    spotbox.bind("<<ListboxSelect>>", on_spot_select)
-
-    # --- Tick chon gui phim khi den noi (can giua, deu) ---
-    cf = ttk.Frame(root); cf.grid(row=7, column=0, padx=PAD, pady=4, sticky="ew")
+    # --- Tick chon gui phim khi den noi ---
+    cf = ttk.Frame(root); cf.grid(row=5, column=0, padx=PAD, pady=4, sticky="ew")
     cf.columnconfigure(0, weight=1); cf.columnconfigure(1, weight=1)
     do_home = tk.BooleanVar(value=False)
     do_ctrl_f = tk.BooleanVar(value=False)
@@ -432,7 +582,7 @@ def main():
         row=0, column=1, padx=4, sticky="w")
 
     # --- Nut OK / STOP (can giua, cung kich thuoc) ---
-    bf = ttk.Frame(root); bf.grid(row=8, column=0, padx=PAD, pady=(4, PAD), sticky="ew")
+    bf = ttk.Frame(root); bf.grid(row=6, column=0, padx=PAD, pady=(4, PAD), sticky="ew")
     bf.columnconfigure(0, weight=1); bf.columnconfigure(1, weight=1); bf.columnconfigure(2, weight=1)
     ttk.Button(bf, text="OK - Di toi", command=lambda: threading.Thread(target=goto, daemon=True).start()).grid(
         row=0, column=0, padx=4, sticky="ew")
@@ -440,9 +590,6 @@ def main():
         row=0, column=1, padx=4, sticky="ew")
     ttk.Button(bf, text="STOP", command=stop).grid(
         row=0, column=2, padx=4, sticky="ew")
-
-    def set_status(m):
-        root.after(0, lambda: status.config(text=m))
 
     def log_add(text, done=False, color=None):
         root.after(0, lambda: _log_add(text, done, color))
@@ -457,24 +604,123 @@ def main():
         logbox.see(tk.END)
 
     def get_target():
-        """Tra ve (map_id, tx, ty) tu spot duoc chon, hoac vi tri live hien tai."""
+        """Tra ve (mid, tok, tx, ty) tu spot duoc chon, hoac vi tri live hien tai."""
         if SELECTED_SPOT[0]:
-            return SELECTED_SPOT[0]
+            tok, x, y = SELECTED_SPOT[0]
+            mid = _TOKEN_TO_MID.get(tok)
+            if mid is None:
+                raise ValueError(f"Token {tok} khong biet MapID de load grid")
+            return (mid, tok, x, y)
         if LIVE_MAP[0] is not None and LIVE_POS[0] is not None:
-            return (LIVE_MAP[0], int(LIVE_POS[0]), int(LIVE_POS[1]))
+            mid = LIVE_MAP[0]
+            return (mid, move_token_for(mid), int(LIVE_POS[0]), int(LIVE_POS[1]))
         raise ValueError("Chua chon spot va chua doc duoc vi tri")
+
+    def type_move_command(tok):
+        """Gui lenh /move <tok> vao chat game: Enter mo chat, go, Enter gui.
+        Hoan toan external. Dung VkKeyScanW lay VK+shift cho tung ky tu, roi
+        keybd_event (da chung minh go duoc vao game). Dau '/' va space xu ly OK."""
+        focus_game()
+        time.sleep(0.20)
+        # Enter mo khung chat
+        _tap_key(0x0D); time.sleep(0.20)
+        # Go tung ky tu cua "/move <tok>"
+        for ch in f"/move {tok}":
+            _tap_char(ch); time.sleep(0.04)
+        time.sleep(0.15)
+        # Enter gui
+        _tap_key(0x0D); time.sleep(0.15)
+
+    def _tap_key(vk):
+        user32.keybd_event(vk, 0, 0, 0); time.sleep(0.03)
+        user32.keybd_event(vk, 0, 0x0002, 0); time.sleep(0.03)
+
+    def _tap_char(ch):
+        """Go 1 ky tu vao cua so active bang VK lay tu VkKeyScanW.
+        bit 9 cua VkKeyScanW = 1 nghia la can giu Shift."""
+        res = user32.VkKeyScanW(ch)
+        vk = res & 0xFF
+        need_shift = (res & 0x0100) != 0
+        if need_shift:
+            user32.keybd_event(0x10, 0, 0, 0)   # Shift down
+            time.sleep(0.02)
+        user32.keybd_event(vk, 0, 0, 0); time.sleep(0.03)
+        user32.keybd_event(vk, 0, 0x0002, 0); time.sleep(0.03)
+        if need_shift:
+            user32.keybd_event(0x10, 0, 0x0002, 0)  # Shift up
+            time.sleep(0.02)
+
+    def do_warp(m, tok):
+        """Neu map dich khac map hien tai: gui /move <tok>, cho load xong.
+        Tra ve True neu da warp thanh cong, False neu da o dung map.
+        Neu khong doi duoc map -> in loi ro rang (KHONG di bo tren map sai)."""
+        cur = LIVE_MAP[0]
+        if cur is None:
+            try:
+                cur = rd_map(pm)
+            except Exception:
+                cur = None
+        if cur == m:
+            return False
+        if not tok:
+            set_status(f"Map {m} khong co lenh /move trong danh sach; se di bo tu map hien tai.")
+            log_add(f"  (map {m}: khong co token /move -> di bo)")
+            return False
+        log_add(f"  Warp: /move {tok}  (dang o map {cur})")
+        for attempt in range(1, 4):
+            set_status(f"Warp toi {tok} (/move) ... lan {attempt}")
+            type_move_command(tok)
+            changed = False
+            for _ in range(30):
+                time.sleep(0.2)
+                try:
+                    mid = rd_map(pm)
+                except Exception:
+                    mid = None
+                if mid is not None and mid != cur:
+                    changed = True
+                    break
+                if not running[0]:
+                    return False
+            if changed:
+                time.sleep(1.0)
+                log_add(f"  Da warpsang {tok} (map {mid}).")
+                return True
+            log_add(f"  Lan {attempt}: khong doi duoc map (van o {cur}).")
+        set_status(f"Warp {tok} THAT BAI sau 3 lan. Kiem tra focus/typing hoac token /move.")
+        log_add(f"  Warp {tok} that bai hoan toan.")
+        return False
 
     def goto():
         if running[0]:
             return
         try:
-            m, tx, ty = get_target()
+            m, tok, tx, ty = get_target()
         except ValueError:
             set_status("Chon 1 train spot hoac dam bao nhan vat dang o map."); return
         # Tham so da chon sau khi test: 0.1s / 6 unit
         click_interval = 0.1
         mov_ahead = 6.0
         running[0] = True
+        # Buoc 1: warp toi map dich neu can (gui /move, cho load xong).
+        live_now = LIVE_MAP[0]
+        if live_now is None:
+            try:
+                live_now = rd_map(pm)
+            except Exception:
+                live_now = None
+        need_warp = (live_now != m)
+        if need_warp:
+            if not do_warp(m, tok):
+                # Warp that bai (token sai / khong go duoc / bi tu choi).
+                # DUNG lai, KHONG di bo tren map sai.
+                set_status(f"Chua warpsang {tok} (map {m}); dung lai de tranh di sai map. "
+                           f"Kiem tra token /move va focus cua so game.")
+                log_add("  (da dung: khong warpsang duoc map dich)")
+                running[0] = False
+                return
+        else:
+            set_status(f"Da o map {m}; khong can warp.")
         set_status("Click tam man hinh de cap nhat toa do...")
         # Click vao TRUNG TAM man hinh (tam nhan vat) de ep game cap nhat toa do,
         # sau do moi doc toa do that va tinh duong di.
@@ -783,7 +1029,7 @@ def main():
         if running[0]:
             return
         try:
-            m, tx, ty = get_target()
+            m, tok, tx, ty = get_target()
         except ValueError:
             set_status("Chon 1 train spot hoac dam bao nhan vat dang o map."); return
         running[0] = True
