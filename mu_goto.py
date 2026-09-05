@@ -72,7 +72,6 @@ def rd_map(pm):
 
 # Trang thai map hien tai (cap nhat moi 1s boi poll_live).
 LIVE_MAP = [None]
-LIVE_HAS_GRID = [False]   # True neu co file grid cho map hien tai
 
 
 def live_map_name():
@@ -82,18 +81,8 @@ def live_map_name():
     return WORLD_ID_NAMES.get(mid, f"Map {mid}")
 
 
-def live_has_grid():
-    mid = LIVE_MAP[0]
-    if mid is None:
-        return False
-    try:
-        return os.path.exists(mu_path.grid_path_for(mid))
-    except Exception:
-        return False
-
-
 def fmt_live(x, y):
-    return f"Map: {live_map_name()}  ({int(x)}, {int(y)})"
+    return f"{live_map_name()} ({int(x)}, {int(y)})"
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -346,29 +335,25 @@ def main():
         pass
     PAD = 8
 
-    # --- Frame tren: Map + Hien tai cung 1 hang ---
+    # --- Hang 1: Map dropdown (hien 5 dong) ---
     top = ttk.Frame(root); top.grid(row=0, column=0, padx=PAD, pady=(PAD, 2), sticky="ew")
     top.columnconfigure(0, weight=0); top.columnconfigure(1, weight=1)
-    ttk.Label(top, text="Map:").grid(row=0, column=0, padx=(0, 4))
     def _on_map_sel(*_):
         i = map_disp.index(sel_map_disp.get())
         sel_map_id.set(avail_maps[i][0])
     sel_map_disp = tk.StringVar(value=map_disp[0])
     sel_map_disp.trace_add("write", _on_map_sel)
     map_menu = ttk.OptionMenu(top, sel_map_disp, map_disp[0], *map_disp)
-    map_menu.configure(width=18)
+    map_menu.configure(width=22, height=5)   # hien toi da 5 dong
     map_menu["menu"].configure(tearoff=0)
-    map_menu.grid(row=0, column=1, sticky="w")
-    cur = ttk.Label(top, text="Map: ?  (?, ?)", anchor="e")
-    cur.grid(row=0, column=2, padx=(12, 0), sticky="e")
-    top.columnconfigure(2, weight=1)
+    map_menu.grid(row=0, column=0, sticky="w")
 
-    # --- Frame toa do X, Y (phia duoi Map) ---
-    cof = ttk.Frame(root); cof.grid(row=1, column=0, padx=PAD, pady=2, sticky="w")
-    ttk.Label(cof, text="Toa do  X:").grid(row=0, column=0, padx=(0, 4))
-    ex = ttk.Entry(cof, width=8); ex.grid(row=0, column=1, padx=2)
-    ttk.Label(cof, text="Y:").grid(row=0, column=2, padx=(8, 4))
-    ey = ttk.Entry(cof, width=8); ey.grid(row=0, column=3, padx=2)
+    # --- Hang 2: Ten map + toa do + nut + (luu train spot) ---
+    curf = ttk.Frame(root); curf.grid(row=1, column=0, padx=PAD, pady=2, sticky="ew")
+    cur = ttk.Label(curf, text="? (?, ?)", anchor="w")
+    cur.pack(side="left", fill="x", expand=True)
+    btn_add = ttk.Button(curf, text="+", width=3, command=lambda: save_spot())
+    btn_add.pack(side="left", padx=(6, 0))
 
     status = ttk.Label(root, text="San sang", anchor="center")
     status.grid(row=2, column=0, padx=PAD, pady=4, sticky="ew")
@@ -382,16 +367,13 @@ def main():
                 LIVE_POS[0], LIVE_POS[1] = x, y
                 mid = rd_map(pm)
                 LIVE_MAP[0] = mid
-                has = live_has_grid()
-                LIVE_HAS_GRID[0] = has
-                cur.config(text=fmt_live(x, y),
-                           foreground="#39d353" if has else "#e6e6e6")
+                cur.config(text=fmt_live(x, y))
         except Exception:
             pass
         root.after(1000, poll_live)
     root.after(1000, poll_live)
 
-    # --- Danh sach diem (toi da 10 dong, co scrollbar) ---
+    # --- Danh sach diem tren duong di (toi da 10 dong, co scrollbar) ---
     ttk.Label(root, text="Cac diem tren duong di (den=xanh, cuoi=do):").grid(
         row=3, column=0, padx=PAD, pady=(6, 2), sticky="w")
     lf = ttk.Frame(root); lf.grid(row=4, column=0, padx=PAD, pady=2, sticky="nsew")
@@ -403,8 +385,44 @@ def main():
     scroll.pack(side="right", fill="y")
     logbox.config(yscrollcommand=scroll.set)
 
+    # --- Danh sach train spot (toi da 5 dong, co scrollbar) ---
+    ttk.Label(root, text="Train spot (luu bang +):").grid(
+        row=5, column=0, padx=PAD, pady=(6, 2), sticky="w")
+    sf = ttk.Frame(root); sf.grid(row=6, column=0, padx=PAD, pady=2, sticky="nsew")
+    spotbox = tk.Listbox(sf, height=5, width=42, relief="flat",
+                         highlightthickness=1, borderwidth=1)
+    spotbox.pack(side="left", fill="both", expand=True)
+    sscroll = ttk.Scrollbar(sf, orient="vertical", command=spotbox.yview)
+    sscroll.pack(side="right", fill="y")
+    spotbox.config(yscrollcommand=sscroll.set)
+    SPOTS = []   # [(mid, name, x, y)]
+    SELECTED_SPOT = [None]   # (mid, x, y) duoc chon lam dich
+
+    def save_spot():
+        mid = LIVE_MAP[0]
+        if mid is None or LIVE_POS[0] is None:
+            set_status("Chua doc duoc vi tri nhan vat")
+            return
+        x, y = int(LIVE_POS[0]), int(LIVE_POS[1])
+        nm = live_map_name()
+        SPOTS.append((mid, nm, x, y))
+        spotbox.insert(tk.END, f"{nm} ({x}, {y})")
+        spotbox.see(tk.END)
+        log_add(f"  Da luu train spot: {nm} ({x}, {y})")
+
+    def on_spot_select(evt):
+        sel = spotbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        if 0 <= idx < len(SPOTS):
+            mid, nm, x, y = SPOTS[idx]
+            SELECTED_SPOT[0] = (mid, x, y)
+            set_status(f"Chon dich: {nm} ({x}, {y})")
+    spotbox.bind("<<ListboxSelect>>", on_spot_select)
+
     # --- Tick chon gui phim khi den noi (can giua, deu) ---
-    cf = ttk.Frame(root); cf.grid(row=5, column=0, padx=PAD, pady=4, sticky="ew")
+    cf = ttk.Frame(root); cf.grid(row=7, column=0, padx=PAD, pady=4, sticky="ew")
     cf.columnconfigure(0, weight=1); cf.columnconfigure(1, weight=1)
     do_home = tk.BooleanVar(value=False)
     do_ctrl_f = tk.BooleanVar(value=False)
@@ -414,7 +432,7 @@ def main():
         row=0, column=1, padx=4, sticky="w")
 
     # --- Nut OK / STOP (can giua, cung kich thuoc) ---
-    bf = ttk.Frame(root); bf.grid(row=6, column=0, padx=PAD, pady=(4, PAD), sticky="ew")
+    bf = ttk.Frame(root); bf.grid(row=8, column=0, padx=PAD, pady=(4, PAD), sticky="ew")
     bf.columnconfigure(0, weight=1); bf.columnconfigure(1, weight=1); bf.columnconfigure(2, weight=1)
     ttk.Button(bf, text="OK - Di toi", command=lambda: threading.Thread(target=goto, daemon=True).start()).grid(
         row=0, column=0, padx=4, sticky="ew")
@@ -438,13 +456,21 @@ def main():
             logbox.itemconfig(idx, fg="green")
         logbox.see(tk.END)
 
+    def get_target():
+        """Tra ve (map_id, tx, ty) tu spot duoc chon, hoac vi tri live hien tai."""
+        if SELECTED_SPOT[0]:
+            return SELECTED_SPOT[0]
+        if LIVE_MAP[0] is not None and LIVE_POS[0] is not None:
+            return (LIVE_MAP[0], int(LIVE_POS[0]), int(LIVE_POS[1]))
+        raise ValueError("Chua chon spot va chua doc duoc vi tri")
+
     def goto():
         if running[0]:
             return
         try:
-            m = sel_map_id.get(); tx = float(ex.get()); ty = float(ey.get())
+            m, tx, ty = get_target()
         except ValueError:
-            set_status("Map/X/Y phai la so."); return
+            set_status("Chon 1 train spot hoac dam bao nhan vat dang o map."); return
         # Tham so da chon sau khi test: 0.1s / 6 unit
         click_interval = 0.1
         mov_ahead = 6.0
@@ -555,8 +581,7 @@ def main():
                 if x is None:
                     set_status("Mat ket noi game."); break
                 root.after(0, lambda v=(x, y): cur.config(
-                    text=fmt_live(v[0], v[1]),
-                    foreground="#39d353" if LIVE_HAS_GRID[0] else "#e6e6e6"))
+                    text=fmt_live(v[0], v[1])))
                 now = time.time()
                 moved = math.hypot(x - last_pos[0], y - last_pos[1])
                 if moved > 0.1:
@@ -758,9 +783,9 @@ def main():
         if running[0]:
             return
         try:
-            m = sel_map_id.get(); tx = float(ex.get()); ty = float(ey.get())
+            m, tx, ty = get_target()
         except ValueError:
-            set_status("Map/X/Y phai la so."); return
+            set_status("Chon 1 train spot hoac dam bao nhan vat dang o map."); return
         running[0] = True
         set_status("Tinh toan duong di (dry-run)...")
         try:
