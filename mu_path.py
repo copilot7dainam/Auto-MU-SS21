@@ -17,10 +17,38 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ATT = os.path.join(HERE, "att_samples")
 GFX = os.path.join(HERE, "gfxdec_src")
 CACHE = os.path.join(ATT, "_grid_cache")
+INDEX = os.path.join(ATT, "map_index.json")
 N = 256
 
 # Flag bit cho biet CHAN (khong di duoc)
 BLOCK = 0x0004 | 0x0008 | 0x0010   # NoMove | NoGround | Water
+
+# Ban do World -> ten map -> ten file grid (tu map_index.json).
+# Dung de hien thi ten va load grid theo ten thay vi WorldN.
+MAP_INDEX = []
+NUM_TO_NAME = {}   # World num -> ten map
+NUM_TO_GRID = {}   # World num -> ten file grid (.json, khong duong dan)
+def _load_index():
+    if not os.path.exists(INDEX):
+        return
+    try:
+        data = json.load(open(INDEX, encoding="utf-8"))
+    except Exception:
+        return
+    MAP_INDEX.clear()
+    NUM_TO_NAME.clear()
+    NUM_TO_GRID.clear()
+    for m in data.get("maps", []):
+        MAP_INDEX.append(m)
+        NUM_TO_NAME[m["num"]] = m.get("name", "")
+        NUM_TO_GRID[m["num"]] = m.get("grid", "World%d_Grid.json" % m["num"])
+_load_index()
+
+def grid_path_for(map_num):
+    """Tra ve duong dan day du den file grid cua World<map_num>."""
+    gname = NUM_TO_GRID.get(map_num, "World%d_Grid.json" % map_num)
+    return os.path.join(CACHE, gname)
+
 
 def _decode_att(map_num):
     """Goi node att_dec.js giai ma World<map_num>/EncTerrain<map>.att -> dict."""
@@ -38,7 +66,7 @@ def _decode_att(map_num):
         if not atts:
             raise FileNotFoundError(f"Khong co .att trong {wd}")
         src = os.path.join(wd, atts[0])
-    out = os.path.join(CACHE, f"World{map_num}.json")
+    out = grid_path_for(map_num)
     os.makedirs(CACHE, exist_ok=True)
     r = subprocess.run(
         ["node", os.path.join(GFX, "att_dec.js"), src, out],
@@ -53,7 +81,7 @@ def load_grid(map_num, force=False, safe_margin=1, keep_points=None):
     """Tra ve (grid2d, is_ext) voi grid2d[y][x] = bool walkable.
     safe_margin: cach chuong ngai vat toi thieu N tile (mac dinh 1) de tranh bi kem.
     keep_points: cac (x,y) luon giu walkable (vd start/goal cua nhan vat)."""
-    cache = os.path.join(CACHE, f"World{map_num}.json")
+    cache = grid_path_for(map_num)
     if force or not os.path.exists(cache):
         cache = _decode_att(map_num)
     d = json.load(open(cache))

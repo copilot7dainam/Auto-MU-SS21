@@ -35,33 +35,9 @@ def log_err(msg):
     except Exception:
         pass
 
-# Ten map S21 (id -> ten). Dung de hien thi ten thay vi so ID trong dropdown.
-# Lay tu mu_epic_gallery.py; them/bot tuy y.
-# Cap nhat ten tu Test.htm (map nguoi dung doi ten). Map khong ten / "None" khong co
-# o day -> hien thi so va nam cuoi dropdown.
-MAP_NAMES = {
-    1:"Lorencia",2:"Dungeon",3:"Devias",4:"Noria",5:"Lost Tower",7:"Arena",
-    8:"Atlans",9:"Tarkan",10:"Devil Square",11:"Icarus",12:"Blood Castle",
-    19:"Chaos Catsle",25:"Kalima2",31:"Valley of Loren 2",32:"Land of Trials",
-    34:"Aida",35:"Crywolf 3",38:"Kanturu Ruins",39:"Kanturu 1 (Remain)",
-    40:"Kanturu 2 (Refinery Tower)",42:"Barracks of Balgass",43:"Balgass Refuge",
-    47:"Illusion Temple 1",52:"Elbeland",57:"Swamp of Calmness",58:"Raklion",
-    59:"Hatchery (Raklion Boss)",64:"Vulcanus",65:"Duel Arena",69:"Double Goer",
-    80:"Loren Market",81:"Karutan 1",82:"Karutan 2",92:"Acheron",94:"Null",
-    95:"Debenter",96:"Debenter",99:"Illusion Temple League",101:"Urk Mountain",
-    103:"Event",111:"Nars",113:"Ferea",114:"Nixie Lake",121:"Deep Dungeon 5",
-    122:"Test Area",124:"Kubera Mine",129:"Atlans Abyss",134:"Arenil Temple",
-    135:"Gray Aida",136:"Old Kethotum",137:"Old Kethotum",138:"Kanturu Underground",
-    139:"Ignis Vulcanus",140:"Battle Boss",141:"Bloody Tarkan",142:"Tormenta Island",
-    143:"Twisted Karutan",144:"Kardamahal Underground Temple",
-    117:"Deep Dungeon 1",118:"Deep Dungeon 2",119:"Deep Dungeon 3",120:"Deep Dungeon 4",
-    130:"Atlans Abyss 2",131:"Atlans Abyss 3",132:"Scotch Canyon",133:"Redsmoke Icarus",
-    145:"Swamp of Despair",146:"Aquilas Santuary",147:"Forgotten Ralkion",
-}
-
 # Ten map S21 theo World ID doc tu memory (offset duoi). Dung de hien thi ten
-# map thuc te nhan vat dang dung (khac voi MAP_NAMES 1-based ben tren dung cho
-# dropdown grid .att). Bang nay lay tu Map ID.txt, da xac nhan voi EpicMU Part2/IGCN S21.
+# map thuc te nhan vat dang dung. Bang nay lay tu Map ID.txt, da xac nhan voi
+# EpicMU Part2/IGCN S21. Danh sach ten chinh cua grid nam trong map_index.json.
 WORLD_ID_NAMES = {
     0:"Lorencia",1:"Dungeon",2:"Devias",3:"Noria",4:"Lost Tower",
     6:"Arena",7:"Atlans",8:"Tarkan",10:"Icarus",33:"Aida",
@@ -325,31 +301,21 @@ def main():
         user32.SetForegroundWindow(GW[0])
 
     running = [False]
-    # --- Danh sach cac map co san (.att) de cho vao dropdown ---
-    HERE = os.path.dirname(os.path.abspath(__file__))
-    avail_maps = []
-    att_dir = os.path.join(HERE, "att_samples")
-    if os.path.isdir(att_dir):
-        for d in sorted(os.listdir(att_dir)):
-            if d.startswith("World") and os.path.isdir(os.path.join(att_dir, d)):
-                try:
-                    avail_maps.append(int(d[len("World"):]))
-                except ValueError:
-                    pass
+    # --- Danh sach map tu map_index.json (ten + file grid tuong ung) ---
+    avail_maps = []   # list of (num, name)
+    for m in mu_path.MAP_INDEX:
+        avail_maps.append((m["num"], m.get("name", "")))
     if not avail_maps:
-        avail_maps = [1]
+        avail_maps = [(1, "")]
 
-    # Sap xep: map co ten ro rang len truoc (theo World tang dan),
-    # map khong ten / None nam cuoi cung (giu thu tu World).
-    named = sorted((m for m in avail_maps if MAP_NAMES.get(m)), key=lambda m: m)
-    unnamed = sorted((m for m in avail_maps if not MAP_NAMES.get(m)), key=lambda m: m)
-    avail_maps = named + unnamed
+    # Sap xep: map co ten len truoc (World tang dan), khong ten nam cuoi.
+    avail_maps.sort(key=lambda t: (0, t[0]) if t[1] else (1, t[0]))
 
-    # Hien thi ten map thay vi ID: ("Lorencia (1)", 1)
-    def map_label(mid):
-        nm = MAP_NAMES.get(mid, "")
+    # Hien thi ten map: ("Lorencia (1)", 1) hoac so neu chua dat ten.
+    def map_label(t):
+        nm, mid = t[1], t[0]
         return f"{nm} ({mid})" if nm else str(mid)
-    map_disp = [map_label(m) for m in avail_maps]
+    map_disp = [map_label(t) for t in avail_maps]
 
     def stop():
         running[0] = False
@@ -362,7 +328,7 @@ def main():
     root.geometry("380x540")
     root.resizable(False, False)
     root.columnconfigure(0, weight=1)
-    sel_map_id = tk.IntVar(value=avail_maps[0])
+    sel_map_id = tk.IntVar(value=avail_maps[0][0])
     try:
         ttk.Style().theme_use("clam")
     except Exception:
@@ -374,7 +340,8 @@ def main():
     top.columnconfigure(0, weight=0); top.columnconfigure(1, weight=1)
     ttk.Label(top, text="Map:").grid(row=0, column=0, padx=(0, 4))
     def _on_map_sel(*_):
-        sel_map_id.set(avail_maps[map_disp.index(sel_map_disp.get())])
+        i = map_disp.index(sel_map_disp.get())
+        sel_map_id.set(avail_maps[i][0])
     sel_map_disp = tk.StringVar(value=map_disp[0])
     sel_map_disp.trace_add("write", _on_map_sel)
     map_menu = ttk.OptionMenu(top, sel_map_disp, map_disp[0], *map_disp)

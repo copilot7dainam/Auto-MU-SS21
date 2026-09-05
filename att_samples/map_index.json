@@ -1,0 +1,429 @@
+{
+  "maps": [
+    {
+      "num": 1,
+      "name": "Lorencia",
+      "grid": "Lorencia_Grid.json"
+    },
+    {
+      "num": 2,
+      "name": "Dungeon",
+      "grid": "Dungeon_Grid.json"
+    },
+    {
+      "num": 3,
+      "name": "Devias",
+      "grid": "Devias_Grid.json"
+    },
+    {
+      "num": 4,
+      "name": "Noria",
+      "grid": "Noria_Grid.json"
+    },
+    {
+      "num": 5,
+      "name": "Lost Tower",
+      "grid": "Lost Tower_Grid.json"
+    },
+    {
+      "num": 7,
+      "name": "Arena",
+      "grid": "Arena_Grid.json"
+    },
+    {
+      "num": 8,
+      "name": "Atlans",
+      "grid": "Atlans_Grid.json"
+    },
+    {
+      "num": 9,
+      "name": "Tarkan",
+      "grid": "Tarkan_Grid.json"
+    },
+    {
+      "num": 11,
+      "name": "Icarus",
+      "grid": "Icarus_Grid.json"
+    },
+    {
+      "num": 34,
+      "name": "Aida",
+      "grid": "Aida_Grid.json"
+    },
+    {
+      "num": 35,
+      "name": "Crywolf (Crywolf Fortress)",
+      "grid": "Crywolf (Crywolf Fortress)_Grid.json"
+    },
+    {
+      "num": 38,
+      "name": "Kanturu Relics",
+      "grid": "Kanturu Relics_Grid.json"
+    },
+    {
+      "num": 39,
+      "name": "Kanturu Event (Remain)",
+      "grid": "Kanturu Event (Remain)_Grid.json"
+    },
+    {
+      "num": 40,
+      "name": "Kanturu 2 (Refinery Tower)",
+      "grid": "Kanturu 2 (Refinery Tower)_Grid.json"
+    },
+    {
+      "num": 42,
+      "name": "Barracks of Balgass",
+      "grid": "Barracks of Balgass_Grid.json"
+    },
+    {
+      "num": 52,
+      "name": "Elbeland",
+      "grid": "Elbeland_Grid.json"
+    },
+    {
+      "num": 57,
+      "name": "Swamp of Calmness",
+      "grid": "Swamp of Calmness_Grid.json"
+    },
+    {
+      "num": 58,
+      "name": "Raklion",
+      "grid": "Raklion_Grid.json"
+    },
+    {
+      "num": 64,
+      "name": "Vulcanus",
+      "grid": "Vulcanus_Grid.json"
+    },
+    {
+      "num": 81,
+      "name": "Karutan 1",
+      "grid": "Karutan 1_Grid.json"
+    },
+    {
+      "num": 82,
+      "name": "Karutan 2",
+      "grid": "Karutan 2_Grid.json"
+    },
+    {
+      "num": 92,
+      "name": "Acheron",
+      "grid": "Acheron_Grid.json"
+    },
+    {
+      "num": 96,
+      "name": "Debenter",
+      "grid": "Debenter_Grid.json"
+    },
+    {
+      "num": 101,
+      "name": "Urk Mountain",
+      "grid": "Urk Mountain_Grid.json"
+    },
+    {
+      "num": 111,
+      "name": "Nars",
+      "grid": "Nars_Grid.json"
+    },
+    {
+      "num": 113,
+      "name": "Ferea",
+      "grid": "Ferea_Grid.json"
+    },
+    {
+      "num": 114,
+      "name": "Nixie Lake",
+      "grid": "Nixie Lake_Grid.json"
+    },
+    {
+      "num": 117,
+      "name": "Deep Dungeon 1",
+      "grid": "Deep Dungeon 1_Grid.json"
+    },
+    {
+      "num": 118,
+      "name": "Deep Dungeon 2",
+      "grid": "Deep Dungeon 2_Grid.json"
+    },
+    {
+      "num": 119,
+      "name": "Deep Dungeon 3",
+      "grid": "Deep Dungeon 3_Grid.json"
+    },
+    {
+      "num": 120,
+      "name": "Deep Dungeon 4",
+      "grid": "Deep Dungeon 4_Grid.json"
+    },
+    {
+      "num": 121,
+      "name": "Deep Dungeon 5",
+      "grid": "Deep Dungeon 5_Grid.json"
+    },
+    {
+      "num": 123,
+      "name": "Swamp Of Darkness",
+      "grid": "Swamp Of Darkness_Grid.json"
+    },
+    {
+      "num": 124,
+      "name": "Kubera Mine",
+      "grid": "Kubera Mine_Grid.json"
+    },
+    {
+      "num": 129,
+      "name": "Atlans Abyss 1",
+      "grid": "Atlans Abyss 1_Grid.json"
+    },
+    {
+      "num": 130,
+      "name": "Atlans Abyss 2",
+      "grid": "Atlans Abyss 2_Grid.json"
+    },
+    {
+      "num": 131,
+      "name": "Atlans Abyss 3",
+      "grid": "Atlans Abyss 3_Grid.json"
+    },
+    {
+      "num": 132,
+      "name": "Scorched Canyon",
+      "grid": "Scorched Canyon_Grid.json"
+    },
+    {
+      "num": 133,
+      "name": "Red Smoke Icarus",
+      "grid": "Red Smoke Icarus_Grid.json"
+    },
+    {
+      "num": 134,
+      "name": "Arnil Temple",
+      "grid": "Arnil Temple_Grid.json"
+    },
+    {
+      "num": 135,
+      "name": "Ashen Aida",
+      "grid": "Ashen Aida_Grid.json"
+    },
+    {
+      "num": 136,
+      "name": "Old Kethotum",
+      "grid": "Old Kethotum_Grid.json"
+    },
+    {
+      "num": 137,
+      "name": "Blade Kehotum",
+      "grid": "Blade Kehotum_Grid.json"
+    },
+    {
+      "num": 138,
+      "name": "Kanturu Underground",
+      "grid": "Kanturu Underground_Grid.json"
+    },
+    {
+      "num": 139,
+      "name": "Ignis Vulcanus",
+      "grid": "Ignis Vulcanus_Grid.json"
+    },
+    {
+      "num": 140,
+      "name": "Battle Boss",
+      "grid": "Battle Boss_Grid.json"
+    },
+    {
+      "num": 141,
+      "name": "Bloody Tarkan",
+      "grid": "Bloody Tarkan_Grid.json"
+    },
+    {
+      "num": 142,
+      "name": "Tormenta Island",
+      "grid": "Tormenta Island_Grid.json"
+    },
+    {
+      "num": 143,
+      "name": "Twisted Karutan",
+      "grid": "Twisted Karutan_Grid.json"
+    },
+    {
+      "num": 144,
+      "name": "Kardamahal Underground",
+      "grid": "Kardamahal Underground_Grid.json"
+    },
+    {
+      "num": 145,
+      "name": "Swamp of Despair",
+      "grid": "Swamp of Despair_Grid.json"
+    },
+    {
+      "num": 146,
+      "name": "Aquilas Sanctuary",
+      "grid": "Aquilas Sanctuary_Grid.json"
+    },
+    {
+      "num": 147,
+      "name": "Forgotten Raklion",
+      "grid": "Forgotten Raklion_Grid.json"
+    },
+    {
+      "num": 10,
+      "name": "",
+      "grid": "World10_Grid.json"
+    },
+    {
+      "num": 12,
+      "name": "",
+      "grid": "World12_Grid.json"
+    },
+    {
+      "num": 19,
+      "name": "",
+      "grid": "World19_Grid.json"
+    },
+    {
+      "num": 25,
+      "name": "",
+      "grid": "World25_Grid.json"
+    },
+    {
+      "num": 31,
+      "name": "",
+      "grid": "World31_Grid.json"
+    },
+    {
+      "num": 32,
+      "name": "",
+      "grid": "World32_Grid.json"
+    },
+    {
+      "num": 41,
+      "name": "",
+      "grid": "World41_Grid.json"
+    },
+    {
+      "num": 43,
+      "name": "",
+      "grid": "World43_Grid.json"
+    },
+    {
+      "num": 47,
+      "name": "",
+      "grid": "World47_Grid.json"
+    },
+    {
+      "num": 59,
+      "name": "",
+      "grid": "World59_Grid.json"
+    },
+    {
+      "num": 60,
+      "name": "",
+      "grid": "World60_Grid.json"
+    },
+    {
+      "num": 62,
+      "name": "",
+      "grid": "World62_Grid.json"
+    },
+    {
+      "num": 63,
+      "name": "",
+      "grid": "World63_Grid.json"
+    },
+    {
+      "num": 65,
+      "name": "",
+      "grid": "World65_Grid.json"
+    },
+    {
+      "num": 66,
+      "name": "",
+      "grid": "World66_Grid.json"
+    },
+    {
+      "num": 68,
+      "name": "",
+      "grid": "World68_Grid.json"
+    },
+    {
+      "num": 69,
+      "name": "",
+      "grid": "World69_Grid.json"
+    },
+    {
+      "num": 70,
+      "name": "",
+      "grid": "World70_Grid.json"
+    },
+    {
+      "num": 71,
+      "name": "",
+      "grid": "World71_Grid.json"
+    },
+    {
+      "num": 72,
+      "name": "",
+      "grid": "World72_Grid.json"
+    },
+    {
+      "num": 73,
+      "name": "",
+      "grid": "World73_Grid.json"
+    },
+    {
+      "num": 74,
+      "name": "",
+      "grid": "World74_Grid.json"
+    },
+    {
+      "num": 75,
+      "name": "",
+      "grid": "World75_Grid.json"
+    },
+    {
+      "num": 80,
+      "name": "",
+      "grid": "World80_Grid.json"
+    },
+    {
+      "num": 83,
+      "name": "",
+      "grid": "World83_Grid.json"
+    },
+    {
+      "num": 94,
+      "name": "",
+      "grid": "World94_Grid.json"
+    },
+    {
+      "num": 95,
+      "name": "",
+      "grid": "World95_Grid.json"
+    },
+    {
+      "num": 99,
+      "name": "",
+      "grid": "World99_Grid.json"
+    },
+    {
+      "num": 103,
+      "name": "",
+      "grid": "World103_Grid.json"
+    },
+    {
+      "num": 115,
+      "name": "",
+      "grid": "World115_Grid.json"
+    },
+    {
+      "num": 116,
+      "name": "",
+      "grid": "World116_Grid.json"
+    },
+    {
+      "num": 122,
+      "name": "",
+      "grid": "World122_Grid.json"
+    }
+  ]
+}
