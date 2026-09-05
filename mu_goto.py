@@ -72,6 +72,7 @@ def rd_map(pm):
 
 # Trang thai map hien tai (cap nhat moi 1s boi poll_live).
 LIVE_MAP = [None]
+LIVE_HAS_GRID = [False]   # True neu co file grid cho map hien tai
 
 
 def live_map_name():
@@ -79,6 +80,16 @@ def live_map_name():
     if mid is None:
         return "?"
     return WORLD_ID_NAMES.get(mid, f"Map {mid}")
+
+
+def live_has_grid():
+    mid = LIVE_MAP[0]
+    if mid is None:
+        return False
+    try:
+        return os.path.exists(mu_path.grid_path_for(mid))
+    except Exception:
+        return False
 
 
 def fmt_live(x, y):
@@ -371,7 +382,10 @@ def main():
                 LIVE_POS[0], LIVE_POS[1] = x, y
                 mid = rd_map(pm)
                 LIVE_MAP[0] = mid
-                cur.config(text=fmt_live(x, y))
+                has = live_has_grid()
+                LIVE_HAS_GRID[0] = has
+                cur.config(text=fmt_live(x, y),
+                           foreground="#39d353" if has else "#e6e6e6")
         except Exception:
             pass
         root.after(1000, poll_live)
@@ -541,7 +555,8 @@ def main():
                 if x is None:
                     set_status("Mat ket noi game."); break
                 root.after(0, lambda v=(x, y): cur.config(
-                    text=fmt_live(v[0], v[1])))
+                    text=fmt_live(v[0], v[1]),
+                    foreground="#39d353" if LIVE_HAS_GRID[0] else "#e6e6e6"))
                 now = time.time()
                 moved = math.hypot(x - last_pos[0], y - last_pos[1])
                 if moved > 0.1:

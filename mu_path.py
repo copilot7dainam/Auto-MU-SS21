@@ -39,14 +39,15 @@ def _load_index():
     NUM_TO_NAME.clear()
     NUM_TO_GRID.clear()
     for m in data.get("maps", []):
+        mid = m["id"]   # MapID 0-based (Lorencia=0, ...)
         MAP_INDEX.append(m)
-        NUM_TO_NAME[m["num"]] = m.get("name", "")
-        NUM_TO_GRID[m["num"]] = m.get("grid", "World%d_Grid.json" % m["num"])
+        NUM_TO_NAME[mid] = m.get("name", "")
+        NUM_TO_GRID[mid] = m.get("grid", "World%d_Grid.json" % (mid + 1))
 _load_index()
 
 def grid_path_for(map_num):
-    """Tra ve duong dan day du den file grid cua World<map_num>."""
-    gname = NUM_TO_GRID.get(map_num, "World%d_Grid.json" % map_num)
+    """Tra ve duong dan day du den file grid cua MapID<map_num> (0-based)."""
+    gname = NUM_TO_GRID.get(map_num, "World%d_Grid.json" % (map_num + 1))
     return os.path.join(CACHE, gname)
 
 
