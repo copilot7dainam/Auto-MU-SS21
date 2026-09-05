@@ -84,7 +84,8 @@ OFF_MAP = 0x19D85DC
 def rd_map(pm):
     """Doc World ID map hien tai tu memory. Tra ve int hoac None."""
     try:
-        base = pm.process_base
+        # pm.process_base la MODULEINFO (struct), lay lpBaseOfDll moi la dia chi base.
+        base = int(pm.process_base.lpBaseOfDll)
         return pm.read_int(base + OFF_MAP)
     except Exception:
         return None
