@@ -59,6 +59,51 @@ MAP_NAMES = {
     145:"Swamp of Despair",146:"Aquilas Santuary",147:"Forgotten Ralkion",
 }
 
+# Ten map S21 theo World ID doc tu memory (offset duoi). Dung de hien thi ten
+# map thuc te nhan vat dang dung (khac voi MAP_NAMES 1-based ben tren dung cho
+# dropdown grid .att). Bang nay lay tu Map ID.txt, da xac nhan voi EpicMU Part2/IGCN S21.
+WORLD_ID_NAMES = {
+    0:"Lorencia",1:"Dungeon",2:"Devias",3:"Noria",4:"Lost Tower",
+    6:"Arena",7:"Atlans",8:"Tarkan",10:"Icarus",33:"Aida",
+    34:"Crywolf (Crywolf Fortress)",37:"Kanturu Relics",
+    38:"Kanturu Event (Remain)",56:"Swamp of Calmness",57:"Raklion",
+    80:"Karutan 1",81:"Karutan 2",91:"Acheron",
+    99:"Illusion Temple League",112:"Ferea",113:"Nixie Lake",
+    116:"Deep Dungeon 1",117:"Deep Dungeon 2",118:"Deep Dungeon 3",
+    119:"Deep Dungeon 4",120:"Deep Dungeon 5",128:"Atlans Abyss",
+    129:"Atlans Abyss 2",130:"Atlans Abyss 3",131:"Scorched Canyon",
+    135:"Old Kethotum",137:"Kanturu Underground",138:"Ignis Vulcanus",
+    140:"Bloody Tarkan",141:"Tormenta Island",142:"Twisted Karutan",
+    143:"Kardamahal Underground",144:"Swamp of Despair",
+    145:"Aquilas Sanctuary",146:"Forgotten Raklion",
+}
+# Offset World ID trong main.exe (EpicMU Part2 / IGCN S21, base + offset).
+OFF_MAP = 0x19D85DC
+
+
+def rd_map(pm):
+    """Doc World ID map hien tai tu memory. Tra ve int hoac None."""
+    try:
+        base = pm.process_base
+        return pm.read_int(base + OFF_MAP)
+    except Exception:
+        return None
+
+
+# Trang thai map hien tai (cap nhat moi 1s boi poll_live).
+LIVE_MAP = [None]
+
+
+def live_map_name():
+    mid = LIVE_MAP[0]
+    if mid is None:
+        return "?"
+    return WORLD_ID_NAMES.get(mid, f"Map {mid}")
+
+
+def fmt_live(x, y):
+    return f"Map: {live_map_name()}  ({int(x)}, {int(y)})"
+
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 user32.SetProcessDPIAware()
@@ -332,7 +377,7 @@ def main():
     map_menu.configure(width=18)
     map_menu["menu"].configure(tearoff=0)
     map_menu.grid(row=0, column=1, sticky="w")
-    cur = ttk.Label(top, text="Hien tai: (?, ?)", anchor="e")
+    cur = ttk.Label(top, text="Map: ?  (?, ?)", anchor="e")
     cur.grid(row=0, column=2, padx=(12, 0), sticky="e")
     top.columnconfigure(2, weight=1)
 
@@ -353,7 +398,9 @@ def main():
             x, y = rd_pos(pm)
             if x is not None:
                 LIVE_POS[0], LIVE_POS[1] = x, y
-                cur.config(text=f"Hien tai: ({int(x)}, {int(y)})")
+                mid = rd_map(pm)
+                LIVE_MAP[0] = mid
+                cur.config(text=fmt_live(x, y))
         except Exception:
             pass
         root.after(1000, poll_live)
@@ -523,7 +570,7 @@ def main():
                 if x is None:
                     set_status("Mat ket noi game."); break
                 root.after(0, lambda v=(x, y): cur.config(
-                    text=f"Hien tai: ({v[0]:.1f}, {v[1]:.1f})"))
+                    text=fmt_live(v[0], v[1])))
                 now = time.time()
                 moved = math.hypot(x - last_pos[0], y - last_pos[1])
                 if moved > 0.1:
