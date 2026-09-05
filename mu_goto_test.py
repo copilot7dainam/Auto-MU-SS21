@@ -14,6 +14,18 @@ from tkinter import ttk, scrolledtext
 
 import mu_path
 
+# Lay bang ten map tu mu_goto de hien thi ten thay vi chi so
+try:
+    from mu_goto import MAP_NAMES
+except Exception:
+    MAP_NAMES = {}
+
+
+def map_label(mid):
+    nm = MAP_NAMES.get(mid, "")
+    return f"{nm} ({mid})" if nm else str(mid)
+
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ATT = os.path.join(HERE, "att_samples")
 CACHE = os.path.join(ATT, "_grid_cache")
@@ -31,7 +43,11 @@ def list_maps():
                 out.append(int(f[5:-5]))
             except ValueError:
                 pass
-    return out
+    # Thu tu World giong mu_goto.py: map co ten ro rang len truoc (World tang dan),
+    # map khong ten nam cuoi (giu thu tu World).
+    named = sorted((m for m in out if MAP_NAMES.get(m)), key=lambda m: m)
+    unnamed = sorted((m for m in out if not MAP_NAMES.get(m)), key=lambda m: m)
+    return named + unnamed
 
 
 def run_all(app, maps):
@@ -45,7 +61,7 @@ def run_all(app, maps):
             safe, _ = mu_path.load_grid(m)            # margin 1
             raw, _ = mu_path.load_grid(m, safe_margin=0)
         except Exception as e:
-            app.log(f"[Map {m}] LOI LOAD: {e}")
+            app.log(f"[{map_label(m)}] LOI LOAD: {e}")
             app.set_map(m, mi + 1, len(maps))
             # dem ca 100 lan nay la that bai vi khong load duoc
             for _ in range(RUNS_PER_MAP):
@@ -83,7 +99,7 @@ def run_all(app, maps):
             done += 1
             app.record(success)
             app.set_progress(done, total)
-        app.log(f"[Map {m}] xong: thanh cong {ok}, that bai {fail}")
+        app.log(f"[{map_label(m)}] xong: thanh cong {ok}, that bai {fail}")
         app.set_map(m, mi + 1, len(maps))
     app.finish()
 
@@ -113,8 +129,8 @@ class App:
         self.lbl_fail = ttk.Label(f, text="That bai: 0")
         self.lbl_fail.pack(anchor="w", pady=(0, 8))
 
-        self.log = scrolledtext.ScrolledText(f, height=10, state="disabled")
-        self.log.pack(fill="both", expand=True)
+        self.logbox = scrolledtext.ScrolledText(f, height=10, state="disabled")
+        self.logbox.pack(fill="both", expand=True)
 
         bf = ttk.Frame(f)
         bf.pack(fill="x", pady=(6, 0))
@@ -141,7 +157,7 @@ class App:
 
     def set_map(self, m, i, total_maps):
         self.root.after(0, lambda: self.lbl_map.config(
-            text=f"Map {m}  ({i}/{total_maps})"))
+            text=f"Map {map_label(m)}  ({i}/{total_maps})"))
 
     def set_run(self, r):
         self.root.after(0, lambda: self.lbl_run.config(
@@ -159,10 +175,10 @@ class App:
         self.root.after(0, lambda: self._log(msg))
 
     def _log(self, msg):
-        self.log.config(state="normal")
-        self.log.insert("end", msg + "\n")
-        self.log.see("end")
-        self.log.config(state="disabled")
+        self.logbox.config(state="normal")
+        self.logbox.insert("end", msg + "\n")
+        self.logbox.see("end")
+        self.logbox.config(state="disabled")
 
     def finish(self):
         self.root.after(0, lambda: self._finish())
@@ -186,5 +202,9 @@ if __name__ == "__main__":
         sys.exit(1)
     print(f"Tim thay {len(maps)} map. Bat dau test ({RUNS_PER_MAP} lan/map)...")
     app = App()
+    # Log danh sach ten tung map ngay dau (dung _log de tranh trung ten widget self.log)
+    app.root.after(0, lambda: app._log("Danh sach map se test:"))
+    for mi, m in enumerate(maps, 1):
+        app.root.after(0, lambda mi=mi, m=m: app._log(f"  {mi}. {map_label(m)}"))
     # cap nhat label lan thu qua set_progress neu can; chay
     app.start(maps)
