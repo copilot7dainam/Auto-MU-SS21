@@ -233,6 +233,240 @@
       "Lost Tower",
       53,
       92
+    ],
+    [
+      "Losttower7",
+      "Lost Tower",
+      34,
+      107
+    ],
+    [
+      "Losttower7",
+      "Lost Tower",
+      7,
+      98
+    ]
+  ],
+  "Lorencia": [
+    [
+      "Lorencia",
+      "Lorencia",
+      132,
+      175
+    ],
+    [
+      "Lorencia",
+      "Lorencia",
+      135,
+      83
+    ],
+    [
+      "Lorencia",
+      "Lorencia",
+      181,
+      117
+    ],
+    [
+      "Lorencia",
+      "Lorencia",
+      182,
+      128
+    ],
+    [
+      "Lorencia",
+      "Lorencia",
+      92,
+      128
+    ]
+  ],
+  "Noria": [
+    [
+      "Noria",
+      "Noria",
+      153,
+      121
+    ],
+    [
+      "Noria",
+      "Noria",
+      214,
+      134
+    ],
+    [
+      "Noria",
+      "Noria",
+      160,
+      77
+    ]
+  ],
+  "Devias": [
+    [
+      "Devias",
+      "Devias",
+      157,
+      44
+    ],
+    [
+      "Devias",
+      "Devias",
+      119,
+      17
+    ]
+  ],
+  "Devias2": [
+    [
+      "Devias2",
+      "Devias",
+      36,
+      14
+    ],
+    [
+      "Devias2",
+      "Devias",
+      37,
+      31
+    ]
+  ],
+  "Dungeon": [
+    [
+      "Dungeon",
+      "Dungeon",
+      110,
+      241
+    ],
+    [
+      "Dungeon",
+      "Dungeon",
+      99,
+      220
+    ]
+  ],
+  "Dungeon2": [
+    [
+      "Dungeon2",
+      "Dungeon",
+      215,
+      116
+    ]
+  ],
+  "Dungeon3": [
+    [
+      "Dungeon3",
+      "Dungeon",
+      10,
+      88
+    ]
+  ],
+  "Atlans": [
+    [
+      "Atlans",
+      "Atlans",
+      75,
+      23
+    ]
+  ],
+  "Atlans2": [
+    [
+      "Atlans2",
+      "Atlans",
+      199,
+      53
+    ]
+  ],
+  "Losttower": [
+    [
+      "Losttower",
+      "Lost Tower",
+      194,
+      105
+    ]
+  ],
+  "Losttower3": [
+    [
+      "Losttower3",
+      "Lost Tower",
+      101,
+      169
+    ]
+  ],
+  "Tarkan": [
+    [
+      "Tarkan",
+      "Tarkan",
+      203,
+      105
+    ]
+  ],
+  "Tarkan2": [
+    [
+      "Tarkan2",
+      "Tarkan",
+      88,
+      128
+    ]
+  ],
+  "Icarus": [
+    [
+      "Icarus",
+      "Icarus",
+      13,
+      38
+    ],
+    [
+      "Icarus",
+      "Icarus",
+      30,
+      37
+    ],
+    [
+      "Icarus",
+      "Icarus",
+      46,
+      35
+    ],
+    [
+      "Icarus",
+      "Icarus",
+      70,
+      35
+    ],
+    [
+      "Icarus",
+      "Icarus",
+      89,
+      39
+    ],
+    [
+      "Icarus",
+      "Icarus",
+      92,
+      55
+    ],
+    [
+      "Icarus",
+      "Icarus",
+      90,
+      68
+    ]
+  ],
+  "Ferea": [
+    [
+      "Ferea",
+      "Ferea",
+      185,
+      216
+    ],
+    [
+      "Ferea",
+      "Ferea",
+      231,
+      198
+    ],
+    [
+      "Ferea",
+      "Ferea",
+      223,
+      216
     ]
   ]
 }
