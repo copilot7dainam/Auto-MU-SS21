@@ -1560,6 +1560,8 @@ def main():
         return False
 
     def goto(_from_train=False):
+        """Di toi spot: warp -> tim duong -> di. Neu sau 60s chua toi -> warp
+        lai va bat dau lai tu dau."""
         if running[0]:
             return
         try:
@@ -1570,6 +1572,19 @@ def main():
         click_interval = 0.1
         mov_ahead = 6.0
         running[0] = True
+        try:
+            while running[0] and not STOP_REQUESTED[0]:
+                arrived = _goto_once(m, tok, tx, ty, click_interval, mov_ahead)
+                if arrived or STOP_REQUESTED[0] or not running[0]:
+                    return
+                log_add("  >60s chua toi dich -> warp lai va bat dau lai.")
+                set_status("Quá 60s chưa tới → /move lại...")
+        finally:
+            running[0] = False
+
+    def _goto_once(m, tok, tx, ty, click_interval, mov_ahead):
+        """1 lan di: warp + A* + di chuyen. Tra True neu DEN NOI, False neu
+        qua 60s (goto se warp lai)."""
         # Dam bao game o foreground truoc khi click (gui phim/warp can focus).
         focus_game()
         time.sleep(0.1)
@@ -1580,15 +1595,14 @@ def main():
             # Khong co token /move -> dung lai.
             set_status(f"Map {m} khong co lenh /move; dung lai.")
             log_add("  (da dung: khong co token /move)")
-            running[0] = False
-            return
+            return True   # khong the warp -> dung vong lap, bao loi
         set_status("Click 400,300 de cap nhat toa do...")
         # Click vao tam nhan vat (400,300) de EP game ghi lai toa do memory
         # (offset chi refresh khi co thao tac), roi doc toi khi ONH DINH.
         click_at(cx_screen, cy_screen, right=False, hwnd=GHWND)
         x0, y0 = pos_stable(pm)
         if x0 is None:
-            set_status("Mat ket noi game. Admin + game mo."); running[0] = False; return
+            set_status("Mat ket noi game. Admin + game mo."); return True
         log_add(f"  Vi tri sau warp/click: ({x0:.0f},{y0:.0f})")
         # Tinh tile start/goal truoc de giu nguyen walkable (khong bi margin loai)
         s0 = mu_path.coord_to_tile(x0, y0)
@@ -1598,7 +1612,7 @@ def main():
         except Exception as e:
             set_status(f"Loi load map {m}: {e}")
             log_err(f"[goto] Loi load map {m}: {e}")
-            running[0] = False; return
+            return True
         set_status(f"Di toi map{m} ({tx:.0f},{ty:.0f}) bang A*...")
         sx, sy = mu_path.nearest_walkable(walk, *s0) or s0
         gx, gy = mu_path.nearest_walkable(walk, *g0) or g0
@@ -1619,7 +1633,7 @@ def main():
             if not path or len(path) < 2:
                 set_status(f"Khong tim duoc duong toi ({tx:.0f},{ty:.0f}). Co the bi ket boi tuong.")
                 log_err(f"[goto] Map {m}: khong tim duoc duong den ({tx:.0f},{ty:.0f})")
-                running[0] = False; return
+                return True
             walk = walk0  # su dung grid goc de di (khong dam bao cach tuong)
         # chuyen waypoint tile -> toa do world (tam tile)
         wps = [mu_path.tile_to_coord(*p) for p in path]
@@ -1659,9 +1673,12 @@ def main():
         REACH_WP = 2.5     # den gan waypoint nay thi chuyen waypoint ke tiep
         MIN_AIM = 1.0      # neu aim cach nhan vat < 1 unit -> bo qua click
         POLL = 0.03
-        WP_TIMEOUT = 5.0   # qua 5s chua toi waypoint ke tiep -> dung, tinh lai duong
-        home_near_sent = [False]   # da gui Home lan "cach dich 10 unit" chua
-        wp_deadline = [time.time()]  # moc thoi diem tinh 5s cho waypoint hien tai
+        STUCK_T = 3.0      # 3s khong doi toa do = stuck -> giu chuot phai 1s
+        GO_TIMEOUT = 60.0  # 60s tu lenh /move chua toi dich -> warp lai
+        t_move = time.time()
+        last_move_t = t_move
+        last_pos = (x0, y0)
+        stuck_stage = [0]  # 0=binh thuong, 1/2=da giu phai, 3=replan
         last_click_pos = (x0, y0)
         last_click_t = -10.0
         step_no = [0]
@@ -1669,6 +1686,42 @@ def main():
         # Bien local, cap nhat moi khi user di chuyen/resize cua so game.
         _L, _T, _W, _H = L, T, W, H
         _cx, _cy = cx_screen, cy_screen
+
+        def right_hold_1s():
+            """Giu nut chuot PHAI 1s tai tam nhan vat (lenh 'dung tan cong'
+            cua MU) roi tha ra."""
+            user32.SetCursorPos(int(_cx), int(_cy))
+            time.sleep(0.02)
+            user32.mouse_event(0x0008, 0, 0, 0, 0)   # RIGHTDOWN
+            time.sleep(1.0)
+            user32.mouse_event(0x0010, 0, 0, 0, 0)   # RIGHTUP
+
+        def replan_here(x, y):
+            """Tinh lai duong A* tu vi tri hien tai ve dich."""
+            nonlocal walk, n_wp
+            s_t = mu_path.coord_to_tile(x, y)
+            g_t = mu_path.coord_to_tile(tx, ty)
+            new_path = mu_path.astar(walk, s_t, g_t)
+            if not new_path or len(new_path) < 2:
+                try:
+                    walk0, _ = mu_path.load_grid(m, safe_margin=0,
+                                                 keep_points=[s_t, g_t])
+                    sx0, sy0 = mu_path.nearest_walkable(walk0, *s_t) or s_t
+                    gx0, gy0 = mu_path.nearest_walkable(walk0, *g_t) or g_t
+                    new_path = mu_path.astar(walk0, (sx0, sy0), (gx0, gy0))
+                    if new_path and len(new_path) >= 2:
+                        walk = walk0
+                except Exception:
+                    new_path = None
+            if new_path and len(new_path) >= 2:
+                wps[:] = [mu_path.tile_to_coord(*p) for p in new_path]
+                n_wp = len(wps); wp_idx[0] = 0
+                logbox.delete(0, tk.END); wp_lines.clear(); reveal_wp(0, None)
+                log_add(f"  Duong moi: {n_wp} diem")
+                return True
+            log_add("  Khong tim duoc duong moi; tiep tuc di theo duong cu.")
+            return False
+
         reset_stop()  # xoa co STOP tu lan chay truoc
         try:
             while running[0] and not STOP_REQUESTED[0]:
@@ -1680,6 +1733,10 @@ def main():
                     set_status("Mat ket noi game."); break
                 root.after(0, lambda v=(x, y): set_pos_text(v[0], v[1]))
                 now = time.time()
+                # --- 60s tu /move chua toi dich -> thoat, goto se warp lai ---
+                if now - t_move > GO_TIMEOUT:
+                    log_add(f"  >{GO_TIMEOUT:.0f}s chua toi dich -> warp lai.")
+                    return False
                 # Refresh rect cua so game moi 0.4s (neu user di chuyen/resize).
                 if now - last_rect_t > 0.4:
                     last_rect_t = now
@@ -1691,56 +1748,40 @@ def main():
                             _cx, _cy = nL + ANCHOR_X, nT + ANCHOR_Y
                             log_add(f"  Window da doi: {_W}x{_H} tai ({_L},{_T})")
 
+                # --- Theo doi STUCK: toa do khong doi 3s -> giu phai 1s;
+                #     6s -> giu phai lan 2; 9s -> tinh lai duong tu hien tai. ---
+                if math.hypot(x - last_pos[0], y - last_pos[1]) > 0.1:
+                    last_move_t = now
+                    last_pos = (x, y)
+                    if stuck_stage[0]:
+                        stuck_stage[0] = 0
+                        log_add("  Da thoat stuck, tiep tuc di.")
+                if now - last_move_t >= STUCK_T * (stuck_stage[0] + 1):
+                    stuck_stage[0] += 1
+                    if stuck_stage[0] <= 2:
+                        log_add(f"  Stuck {STUCK_T*stuck_stage[0]:.0f}s: giu chuot phai 1s.")
+                        set_status("Stuck → giữ chuột phải 1s...")
+                        right_hold_1s()
+                        last_move_t = time.time()   # tinh lai dong ho 3s
+                    else:
+                        log_add(f"  Stuck {STUCK_T*3:.0f}s: tinh lai duong tu ({x:.0f},{y:.0f}).")
+                        set_status("Stuck → tính lại đường đi...")
+                        replan_here(x, y)
+                        stuck_stage[0] = 0
+                        last_move_t = time.time()
+
                 # --- Chuyen sang waypoint ke tiep neu da den gan ---
-                advanced = False
                 while (wp_idx[0] < len(wps) - 1 and
                        math.hypot(wps[wp_idx[0]][0] - x, wps[wp_idx[0]][1] - y) < REACH_WP):
                     reached = wp_idx[0]
                     wp_idx[0] += 1
-                    advanced = True
                     # To xanh diem vua den, roi hien diem ke tiep (den / do neu la diem cuoi)
                     mark_done(reached)
                     nxt = wp_idx[0]
                     reveal_wp(nxt, "red" if nxt == n_wp - 1 else None)
-                if advanced:
-                    wp_deadline[0] = now   # reset dong ho 5s cho waypoint moi
-
-                # --- Qua 5s chua toi waypoint hien tai -> dung, tinh lai duong ---
-                if now - wp_deadline[0] > WP_TIMEOUT:
-                    wp_deadline[0] = now
-                    log_add(f"  >{WP_TIMEOUT:.0f}s chua toi diem {wp_idx[0]+1}/{n_wp} "
-                            f"-> dung, tinh lai duong tu ({x:.0f},{y:.0f})")
-                    set_status("Quá 5s chưa tới điểm → tính lại đường đi...")
-                    s_t = mu_path.coord_to_tile(x, y)
-                    g_t = mu_path.coord_to_tile(tx, ty)
-                    new_path = mu_path.astar(walk, s_t, g_t)
-                    if not new_path or len(new_path) < 2:
-                        try:
-                            walk0, _ = mu_path.load_grid(m, safe_margin=0,
-                                                         keep_points=[s_t, g_t])
-                            sx0, sy0 = mu_path.nearest_walkable(walk0, *s_t) or s_t
-                            gx0, gy0 = mu_path.nearest_walkable(walk0, *g_t) or g_t
-                            new_path = mu_path.astar(walk0, (sx0, sy0), (gx0, gy0))
-                            if new_path and len(new_path) >= 2:
-                                walk = walk0
-                        except Exception:
-                            new_path = None
-                    if new_path and len(new_path) >= 2:
-                        wps[:] = [mu_path.tile_to_coord(*p) for p in new_path]
-                        n_wp = len(wps); wp_idx[0] = 0
-                        logbox.delete(0, tk.END); wp_lines.clear(); reveal_wp(0, None)
-                        log_add(f"  Duong moi: {n_wp} diem")
-                    else:
-                        log_add("  Khong tim duoc duong moi; tiep tuc di theo duong cu.")
 
                 tx_seg, ty_seg = wps[wp_idx[0]]
                 dist_goal = math.hypot(tx - x, ty - y)
-                # Home som theo DIEM DUONG: con <=10 waypoint thi bat
-                # (vd duong 50 diem -> tai 40/50; 150 diem -> tai 140/150).
-                if not home_near_sent[0] and wp_idx[0] + 1 >= n_wp - 10:
-                    home_near_sent[0] = True
-                    send_home()
-                    log_add(f"  Con {n_wp - wp_idx[0]} diem ({wp_idx[0]+1}/{n_wp}): da gui Home (lan 1)")
                 if dist_goal < ARRIVE:
                     # Diem cuoi phai la mau DO (reveal neu chua, hoac to do neu da co)
                     if n_wp - 1 not in wp_lines:
@@ -1754,15 +1795,10 @@ def main():
                         root.after(0, _red)
                     log_add(f"  DEN NOI ({x:.1f},{y:.1f})", done=True)
                     set_status(f"DEN NOI ({x:.1f},{y:.1f})")
-                    # Toi noi: cho 1s -> Home (tat Helper) -> cho 3s -> Home
-                    # (kich hoat lai tai vi tri moi); Ctrl+F neu duoc tick.
+                    # Toi dung toa do: Home 1 lan; Ctrl+F neu duoc tick.
                     try:
-                        time.sleep(1.0)
                         send_home()
-                        log_add("  Den noi: Home lan tat (sau 1s)")
-                        time.sleep(3.0)
-                        send_home()
-                        log_add("  Den noi: Home lan kich hoat (sau 3s)")
+                        log_add("  Den noi: da gui Home")
                         if do_ctrl_f.get():
                             time.sleep(1.0)
                             send_ctrl_f()
@@ -1814,8 +1850,7 @@ def main():
                 set_status("Da dung.")
         except Exception as e:
             set_status(f"Loi: {e}")
-        finally:
-            running[0] = False
+        return True   # ket thuc binh thuong (den noi / dung / loi) -> goto dung vong
 
     def calculate():
         """Tinh truoc duong di (khong click, khong di): in tat ca cac buoc,
