@@ -696,8 +696,7 @@ LT_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mu_goto_lt.pn
 CHAT_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mu_goto_chat.png")
 # Danh sach icon can nhan dien (ten hien thi, duong dan file template).
 # Them muc moi vao day -> tu dong xuat hien trong modal "Chup anh".
-ICON_ITEMS = [("Helper", HELPER_IMG), ("Giảm tải", LT_IMG),
-              ("Ô chat", CHAT_IMG)]
+ICON_ITEMS = [("Helper", HELPER_IMG), ("Giảm tải", LT_IMG)]
 
 
 def grab_client():
@@ -812,6 +811,58 @@ def log_arrive(msg):
         root.after(0, lambda: _log_add(msg, False))
     except Exception:
         pass
+
+
+# --- Clipboard: copy/dan lenh chat (nhanh & chinh xac hon go tung ky tu) ---
+_cf = ctypes.windll.user32
+kernel32.GlobalAlloc.restype = ctypes.c_void_p
+kernel32.GlobalAlloc.argtypes = [wt.UINT, ctypes.c_size_t]
+kernel32.GlobalLock.restype = ctypes.c_void_p
+kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+kernel32.GlobalUnlock.restype = wt.BOOL
+kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+_cf.OpenClipboard.restype = wt.BOOL
+_cf.SetClipboardData.restype = ctypes.c_void_p
+_cf.SetClipboardData.argtypes = [wt.UINT, ctypes.c_void_p]
+
+
+def copy_to_clipboard(text):
+    """Dat text vao clipboard (CF_UNICODETEXT). Retry OpenClipboard toi da
+    10 lan (clipboard co the bi app khac giu tam thoi). Tra True/False."""
+    for _ in range(10):
+        if _cf.OpenClipboard(None):
+            break
+        time.sleep(0.05)
+    else:
+        return False
+    try:
+        _cf.EmptyClipboard()
+        data = text.encode("utf-16-le") + b"\x00\x00"
+        hmem = kernel32.GlobalAlloc(0x0042, len(data))   # GMEM_MOVEABLE|ZEROINIT
+        if not hmem:
+            return False
+        ptr = kernel32.GlobalLock(hmem)
+        ctypes.memmove(ptr, data, len(data))
+        kernel32.GlobalUnlock(hmem)
+        ok = _cf.SetClipboardData(13, hmem)              # CF_UNICODETEXT
+        return bool(ok)
+    except Exception:
+        return False
+    finally:
+        _cf.CloseClipboard()
+
+
+def paste_clipboard():
+    """Gui Ctrl+V (dan lenh da copy vao o chat)."""
+    VK_CONTROL = 0x11
+    VK_V = 0x56
+    user32.keybd_event(VK_CONTROL, 0, 0, 0)
+    time.sleep(0.03)
+    user32.keybd_event(VK_V, 0, 0, 0)
+    time.sleep(0.03)
+    user32.keybd_event(VK_V, 0, 0x0002, 0)
+    time.sleep(0.03)
+    user32.keybd_event(VK_CONTROL, 0, 0x0002, 0)
 
 
 # --- Dung tool bang phim PgUp (polling toan cuc) ---
@@ -965,7 +1016,7 @@ def main():
                          bg=DANGER, fg="#FFFFFF", activebackground="#FF453A",
                          relief="flat", bd=0, **kw)
 
-    # ===== Layout: 2 tab (segmented control kieu macOS) =====
+    # ===== Layout: hang tren = Train + 3 tab; duoi = noi dung tab =====
     if USE_CTK:
         root.grid_columnconfigure(0, weight=1)
         root.grid_rowconfigure(1, weight=1)
@@ -974,9 +1025,15 @@ def main():
         root.columnconfigure(0, weight=1)
         root.rowconfigure(1, weight=1)
 
-    tab_bar = (ctk.CTkFrame(root, fg_color="transparent") if USE_CTK
+    top_bar = (ctk.CTkFrame(root, fg_color="transparent") if USE_CTK
                else tk.Frame(root, bg=BG))
-    tab_bar.grid(row=0, column=0, sticky="ew", padx=PAD, pady=(PAD, 6))
+    top_bar.grid(row=0, column=0, sticky="ew", padx=PAD, pady=(PAD, 6))
+
+    # --- Nut Train cung hang voi cac tab ---
+    btn_train = btn_primary(top_bar, "▶  Train",
+                            command=lambda: toggle_train())
+    btn_train.pack(side="left", padx=(0, 10))
+
     content = (ctk.CTkFrame(root, fg_color="transparent") if USE_CTK
                else tk.Frame(root, bg=BG))
     content.grid(row=1, column=0, sticky="nsew", padx=PAD, pady=(0, PAD))
@@ -1000,13 +1057,14 @@ def main():
                 b.configure(bg=ACCENT if sel else CARD,
                             fg="#FFFFFF" if sel else TEXT)
 
-    for key, txt in (("ctrl", "Điều khiển"), ("cfg", "Cấu hình")):
+    for key, txt in (("ctrl", "Điều khiển"), ("cfg", "Cấu hình"),
+                     ("log", "Log")):
         if USE_CTK:
-            b = ctk.CTkButton(tab_bar, text=txt, font=f_body, height=24,
+            b = ctk.CTkButton(top_bar, text=txt, font=f_body, height=24,
                               width=80, corner_radius=6,
                               command=lambda k=key: show_tab(k))
         else:
-            b = tk.Button(tab_bar, text=txt, font=f_body, relief="flat", bd=0,
+            b = tk.Button(top_bar, text=txt, font=f_body, relief="flat", bd=0,
                           command=lambda k=key: show_tab(k))
         b.pack(side="left", padx=(0, 4))
         tab_btns[key] = b
@@ -1098,19 +1156,10 @@ def main():
                   fg=MUTED, bg=CARD, relief="flat", bd=0
                   ).pack(padx=14, pady=(6, 12), anchor="e")
 
-    # ---------- TAB 1: DIEU KHIEN ----------
+    # ---------- TAB 1: DIEU KHIEN (chi chua cac thanh tien trinh) ----------
     tab_ctrl = card(content)
     TABS["ctrl"] = tab_ctrl
     sidebar = tab_ctrl
-    btn_train = btn_primary(sidebar, "▶  Train",
-                            command=lambda: toggle_train())
-    btn_train.pack(fill="x", padx=PAD, pady=(PAD, 4))
-    btn_reset = btn_secondary(sidebar, "↺  Reset",
-                              command=lambda: toggle_reset())
-    btn_reset.pack(fill="x", padx=PAD, pady=(0, 4))
-    btn_cap = btn_secondary(sidebar, "📷  Chụp ảnh",
-                            command=open_capture_dialog)
-    btn_cap.pack(fill="x", padx=PAD, pady=(0, 8))
 
     # --- Thanh tien trinh DINH: 1 bar / 1 cua so game, hinh giong nut Train ---
     # (chu nhat bo goc 10px, cao 36). Phat hien cua so moi -> them bar tu dong.
@@ -1124,13 +1173,15 @@ def main():
     class Bar:
         """Bar bo goc kieu nut Train: track xam nhat + fill mau + text trang."""
         def __init__(self, parent):
-            self.c = tk.Canvas(parent, width=BAR_W, height=BAR_H,
+            # width de nho (100): chieu rong that do fill="x" + Configure quyet
+            # dinh; khai bao BAR_W lan ra se tran card khi tab an/chiEN.
+            self.c = tk.Canvas(parent, width=100, height=BAR_H,
                                highlightthickness=0, bg="#FFFFFF")
             self.c.pack(fill="x", pady=3)
             self.track = None
             self.fill = None
             self.txt = None
-            self._w = BAR_W
+            self._w = 100
             self._pct = 0.0
             self._color = SUCCESS
             self._text = ""
@@ -1269,7 +1320,6 @@ def main():
                   bg=ACCENT, fg="#FFFFFF", activebackground=ACCENT_HOVER,
                   relief="flat", bd=0).grid(row=len(keys), column=0, columnspan=2,
                                             sticky="ew", padx=12, pady=(8, 12))
-    btn_reset.bind("<Button-3>", open_reset_dialog)
 
     def set_train_active(active):
         """Xanh duong khi nghi, xanh la khi Train dang chay."""
@@ -1554,14 +1604,22 @@ def main():
 
     refresh_all()
 
-    # -- Card 2: log duong di — chi 1 vien ngoai (card), khong scrollbar,
-    #    cuon bang con lan chuot (bind MouseWheel). --
-    log_card = card(main_col)
-    log_card.grid(row=2, column=0, sticky="nsew", padx=PAD, pady=(6, PAD))
+    # --- Nut Reset + Chup anh: duoi Grid, trong tab Cau hinh ---
+    btn_reset = btn_secondary(main_col, "↺  Reset",
+                              command=lambda: toggle_reset())
+    btn_reset.grid(row=1, column=0, sticky="ew", padx=PAD, pady=(0, 4))
+    btn_cap = btn_secondary(main_col, "📷  Chụp ảnh",
+                            command=open_capture_dialog)
+    btn_cap.grid(row=2, column=0, sticky="ew", padx=PAD, pady=(0, PAD))
+    btn_reset.bind("<Button-3>", open_reset_dialog)
+
+    # ---------- TAB LOG: chi 1 vien ngoai, khong scrollbar, cuon lan chuot ---
+    log_card = card(content)
+    TABS["log"] = log_card
     log_card.grid_columnconfigure(0, weight=1)
     log_card.grid_rowconfigure(0, weight=1)
     logbox = tk.Listbox(
-        log_card, height=8, relief="flat", highlightthickness=0,
+        log_card, height=16, relief="flat", highlightthickness=0,
         borderwidth=0, bg=CARD, fg=TEXT,
         selectbackground=ACCENT, selectforeground="#FFFFFF",
         font=f_body, activestyle="none")
@@ -1629,29 +1687,18 @@ def main():
         raise ValueError("Chua chon spot va chua doc duoc vi tri")
 
     def send_chat_command(cmd):
-        """Gui 1 lenh chat vao game: Enter mo chat -> CHI khi thay bieu tuong
-        O CHAT (template mu_goto_chat.png) moi go lenh; chua thay -> Esc,
-        Enter lai, kiem tra lai (toi da 5 lan). Roi Enter gui.
-        Dung VkKeyScanW + keybd_event (da chung minh go duoc vao game)."""
+        """Gui 1 lenh chat: Enter mo chat -> DAN tu clipboard (Ctrl+V) ->
+        Enter gui. Copy-paste chinh xac nen khong can kiem tra o chat nua."""
         focus_game()
         time.sleep(0.20)
-        _tap_key(0x0D); time.sleep(0.20)          # Enter mo khung chat
-        for attempt in range(5):
-            for _ in range(10):                    # toi da 2s cho o chat hien
-                p = icon_present(CHAT_IMG)
-                if p is None or p:
-                    break                          # khong co template -> tiep tuc
-                time.sleep(0.2)
-            else:
-                p = icon_present(CHAT_IMG)
-            if p is None or p:
-                break                              # da thay o chat -> go lenh
-            # Chua thay: Esc dong, Enter mo lai, kiem tra lai
-            log_arrive("  Khung chat chua mo: Esc → Enter...")
-            _tap_key(0x1B); time.sleep(0.20)       # Esc
-            _tap_key(0x0D); time.sleep(0.20)       # Enter
-        for ch in cmd:
-            _tap_char(ch); time.sleep(0.04)
+        _tap_key(0x0D); time.sleep(0.25)           # Enter mo khung chat
+        # Dan lenh tu clipboard; clipboard hong -> fallback go tung ky tu
+        if copy_to_clipboard(cmd):
+            time.sleep(0.05)
+            paste_clipboard()
+        else:
+            for ch in cmd:
+                _tap_char(ch); time.sleep(0.04)
         time.sleep(0.15)
         _tap_key(0x0D); time.sleep(0.15)          # Enter gui
 
@@ -1668,8 +1715,8 @@ def main():
             f"/addvit {p['vit']}",
             f"/addene {p['ene']}",
             f"/addcmd {p['cmd']}",
-            "/addstr auto 32000",
             "/addagi auto 32000",
+            "/addstr auto 32000",
             "/addene auto 32000",
             "/addvit auto 32000",
             "/addcmd auto 32000",
