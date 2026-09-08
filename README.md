@@ -107,9 +107,19 @@ vật chạy chuỗi riêng theo **Lv của chính nó**:
 
 | Lớp | Cách hoạt động |
 |-----|----------------|
-| **Helper** | Tới đích → chờ 1s → nhấn Home → 1s → tìm icon Helper → chưa thấy → nhấn lại → lặp (PgUp thoát) |
+| **Helper** | Tới đích → chờ 1s → nhấn Home → 1s → tìm icon Helper → chưa thấy → nhấn lại → lặp (PgUp thoát). Không verify được ảnh → bấm Home 1 lần (best effort) |
 | **Giảm tải** | ON: không thấy icon → Ctrl+F → 1s → thấy → dừng. OFF: thấy icon → Ctrl+F → 1s → mất → dừng. Tối đa 10 lần |
-| **Chế độ đơn giản** (tùy chọn) | Không thấy **ảnh A** → **click điểm B** đã cấu hình → 1s → kiểm tra lại → lặp. Chạy ngay sau khi thoát Giảm tải thành công |
+| **Chế độ đơn giản** (tùy chọn) | Không thấy **ảnh A** → **click điểm B** đã cấu hình → 1s → kiểm tra lại → lặp. Chỉ chạy **sau khi đã thoát Giảm tải thành công** |
+
+**Nguyên tắc "không chắc thì không đi tiếp":**
+- Ảnh chụp để so khớp luôn **kéo đúng cửa sổ thao tác lên đỉnh trước khi chụp**
+  — chống trường hợp cửa sổ game khác đè lên làm nhận diện sai.
+- Giảm tải **chưa thoát được** (10 lần bấm / không verify được ảnh) → tool
+  **dừng chuỗi ở cửa sổ đó**, hoãn sang lượt duyệt sau; **không** /move,
+  **không** reset, **không** chạy bước kế tiếp.
+- Mỗi click xác minh **cửa sổ dưới con trỏ đúng là cửa sổ đang làm việc**
+  (WindowFromPoint + BringWindowToTop, retry 3 lần) — chống thao tác nhầm
+  cửa sổ khi nhiều game chồng nhau.
 
 - Phạm vi quét ảnh: **chỉ vùng client của cửa sổ game đang thao tác** (không
   phải toàn màn hình), ngưỡng khớp 0.90 (chống khớp nhầm nút Pause cùng màu).

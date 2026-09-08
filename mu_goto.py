@@ -850,15 +850,27 @@ ICON_ITEMS = [("Helper", HELPER_IMG), ("Giảm tải", LT_IMG)]
 
 
 def grab_client(hwnd=None):
-    """Chup vung client cua game -> PIL.Image (RGB). None neu hong."""
+    """Chup vung client cua game -> PIL.Image (RGB). None neu hong.
+    QUAN TRONG: ImageGrab chay theo toa do man hinh — cua so KHAC de len tren
+    thi anh chup duoc la cua so de! → keo dung cua so hwnd len dinh truoc
+    khi chup (BringWindowToTop + SetForegroundWindow)."""
     try:
         from PIL import ImageGrab
-        r = find_window_hwnd(hwnd or ACTIVE_HWND[0])
+        hwnd = hwnd or ACTIVE_HWND[0]
+        r = find_window_hwnd(hwnd)
         if not r:
             return None
-        (L, T, W, H), _ = r
+        (L, T, W, H), wh = r
         if W < 8 or H < 8:
             return None
+        if wh:
+            try:
+                if user32.GetForegroundWindow() != wh:
+                    user32.BringWindowToTop(wh)
+                    user32.SetForegroundWindow(wh)
+                    time.sleep(0.12)   # cho ve lai xong moi chup
+            except Exception:
+                pass
         return ImageGrab.grab(bbox=(L, T, L + W, T + H))
     except Exception:
         return None
@@ -897,7 +909,12 @@ def send_home_verified(hwnd=None):
             return False
         p = icon_present(HELPER_IMG, hwnd=hwnd)
         if p is None:
-            return True                          # khong co template -> bo qua
+            # Khong verify duoc bang anh → bam Home 1 lan (best effort) va
+            # di tiep; KHONG im lang bo qua nhu truoc day.
+            log_arrive("  Helper: khong verify duoc anh → bam Home 1 lan.")
+            send_home(hwnd)
+            time.sleep(1.0)
+            return True
         if p:
             log_arrive("  Helper: da thay bieu tuong -> cho 1s roi di tiep.")
             time.sleep(1.0)
@@ -945,8 +962,10 @@ def send_ctrl_f_on(hwnd=None):
             return False
         p = icon_present(LT_IMG, hwnd=hwnd)
         if p is None:
-            LT_ON[hwnd] = True
-            return True                          # khong co template -> bo qua
+            LT_ON[hwnd] = None
+            log_arrive("  Giam tai ON: khong verify duoc anh (chup lai template 📷"
+                       " / loi chup man hinh) → chua bat, vong sau thu lai.")
+            return False
         if p:
             LT_ON[hwnd] = True
             log_arrive("  Giam tai ON: da thay bieu tuong -> cho 1s roi di tiep.")
@@ -979,8 +998,10 @@ def send_ctrl_f_off(hwnd=None):
             return False
         p = icon_present(LT_IMG, hwnd=hwnd)
         if p is None:
-            LT_ON[hwnd] = False                  # khong co template -> bo qua
-            return True
+            LT_ON[hwnd] = None                   # KHONG verify duoc → khong gia dinh gi ca
+            log_arrive("  Giam tai OFF: khong verify duoc anh (chup lai template 📷"
+                       " / loi chup man hinh) → CHUA thoat, thu lai sau.")
+            return False
         if not p:
             LT_ON[hwnd] = False
             log_arrive("  Giam tai OFF: icon da mat -> cho 1s roi di tiep.")
@@ -1874,13 +1895,14 @@ def main():
             return "visit"
         if lv >= AUTO_RESET_LV:
             log_add(f"  {nm}: dat Lv {lv} >= {AUTO_RESET_LV} → tat Giam tai, Reset stat")
-            # CHI kiem tra che do don gian KHI THAT SU da thoat Giam tai
-            # (off() tra True). Chua thoat ma kiem tra A/B = vong lap ket:
-            # nut don gian khong hien khi Giam tai con bat.
-            if send_ctrl_f_off(hwnd):
-                ensure_simple_mode(hwnd)
-            else:
-                log_add("  Chua thoat duoc Giam tai → BO QUA kiem tra don gian.")
+            # THAT BAI khi thoat Giam tai (nhap sai / phim khong toi / khop
+            # nham) → KHONG reset, KHONG di tiep; quay lai cua so nay o vong
+            # duyet sau (lan thu hai cua Ctrl+F nhieu khi cung do focus).
+            if not send_ctrl_f_off(hwnd):
+                log_add("  Chua thoat duoc Giam tai → HOAN lai cua so nay, "
+                        "thu lai vong sau.")
+                return "visit"
+            ensure_simple_mode(hwnd)
             reset_stats()
             if STOP_REQUESTED[0]:
                 return "stopped"
@@ -2342,13 +2364,14 @@ def main():
         time.sleep(0.1)
         # TRUOC /move: neu NUT GIAM TAI CON HIEN tren man hinh -> tat truoc
         # (send_ctrl_f_off tu kiem tra: icon mat san thi khong nhan).
-        # CHI kiem tra che do don gian khi THAT SU da thoat Giam tai (True);
-        # chua thoat ma kiem tra A/B = vong lap ket (nut don gian khong hien
-        # khi Giam tai con bat).
+        # CHUA THOAT duoc → KHONG warp, KHONG di tiep: tra False de vong
+        # ngoài goto() nghi 3s roi thu lai tu dau.
         if send_ctrl_f_off():
             ensure_simple_mode()
         else:
-            log_add("  Chua thoat duoc Giam tai → BO QUA kiem tra don gian.")
+            log_add("  Chua thoat duoc Giam tai → chua the /move, thu lai.")
+            time.sleep(3.0)
+            return False
         # Buoc 1: luon warp ve map goc cua spot (/move <tok>), ke ca khi dang
         # o dung map do (de ve toa do goc truoc khi tinh duong). Khong kiem tra
         # cung/khac map.
