@@ -549,6 +549,15 @@ user32.GetWindowTextLengthW.argtypes = [wt.HWND]
 user32.GetWindowTextLengthW.restype = ctypes.c_int
 user32.GetWindowTextW.argtypes = [wt.HWND, ctypes.POINTER(ctypes.c_wchar), ctypes.c_int]
 user32.GetWindowTextW.restype = ctypes.c_int
+user32.WindowFromPoint.argtypes = [wt.POINT]
+user32.WindowFromPoint.restype = wt.HWND
+user32.GetAncestor.argtypes = [wt.HWND, wt.UINT]
+user32.GetAncestor.restype = wt.HWND
+user32.BringWindowToTop.argtypes = [wt.HWND]
+user32.BringWindowToTop.restype = wt.BOOL
+user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_int, wt.UINT]
+user32.SetWindowPos.restype = wt.BOOL
 
 # Nguong: den gan dich hon muc nay thi coi nhu den noi (don vi world)
 ARRIVE = 1.5
@@ -668,16 +677,40 @@ def rd_pos(pm):
         return None, None
 
 
+def _window_at(x, y):
+    """HWND cua cua so TOP-LEVEL nam duoi diem man hinh (x, y)."""
+    try:
+        hw = user32.WindowFromPoint(wt.POINT(int(x), int(y)))
+        if not hw:
+            return None
+        root = user32.GetAncestor(hw, 3)        # GA_ROOTOWNER
+        return root or hw
+    except Exception:
+        return None
+
+
 def click_at(sx, sy, right=False, hwnd=None):
     """Click vao vi tri man hinh (sx,sy) bang SetCursorPos + mouse_event.
-    mouse_event la input TOAN CUC: click roi vao cua so nam duoi con tro,
-    khong can game o foreground. Day la co che goc da duoc chung minh chay
-    dung voi client MU (khong dung SendInput/PostMessage - bi loc/sai coord).
-    Tool GIU TOAN QUYEN chuot trong suot qua trinh di chuyen (khong tra ve
-    vi tri cu)."""
+    mouse_event la input TOAN CUC: click roi vao cua so NAM DUOI con tro.
+    → Voi nhieu cua so game CHONG NHAU, phai kiem tra cua so duoi con tro
+    DUNG LA hwnd (cua so dang lam viec) truoc khi bam; bi che -> keo no len
+    dinh (focus_game) roi kiem tra lai, toi da 3 lan. Neu van bi che thi
+    VAN bam (khong the lam khac) + log canh bao."""
     sx, sy = int(sx), int(sy)
-    user32.SetCursorPos(sx, sy)
-    time.sleep(0.02)
+    if hwnd:
+        for _ in range(3):
+            user32.SetCursorPos(sx, sy)
+            time.sleep(0.03)
+            if _window_at(sx, sy) == hwnd:
+                break
+            focus_game(hwnd)                    # keo dung cua so len dinh
+            time.sleep(0.12)
+        else:
+            log_arrive(f"  click: cua so {hwnd:#x} van bi che tai ({sx},{sy})"
+                       f" — click co the roi vao cua so khac!")
+    else:
+        user32.SetCursorPos(sx, sy)
+        time.sleep(0.02)
     down = 0x0008 if right else 0x0002   # RIGHTDOWN / LEFTDOWN
     up = 0x0010 if right else 0x0004     # RIGHTUP / LEFTUP
     user32.mouse_event(down, 0, 0, 0, 0)
@@ -760,6 +793,7 @@ def focus_game(hwnd=None):
         time.sleep(0.05)
         user32.keybd_event(0x12, 0, 0x0002, 0)  # VK_MENU up
         user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        user32.BringWindowToTop(hwnd)   # cho du SetForegroundWindow bi chan
         user32.SetForegroundWindow(hwnd)
         time.sleep(0.10)
         if fg_thread:
@@ -772,7 +806,9 @@ def focus_game(hwnd=None):
 def _ensure_foreground(hwnd, tries=3):
     """Chac chan cua so hwnd THUC SU la foreground truoc khi gui phim
     (SetForegroundWindow doi khi that bai im lang -> phim roi vao cua so khac).
-    Tra True khi da la foreground."""
+    hwnd thieu -> cua so ACTIVE (mac dinh theo ACTIVE_HWND, KHONG phai 'ai
+    dang foreground thi gui cho ay'). Tra True khi da la foreground."""
+    hwnd = hwnd or ACTIVE_HWND[0]
     if not hwnd:
         return True
     for _ in range(tries):
@@ -780,7 +816,10 @@ def _ensure_foreground(hwnd, tries=3):
             return True
         focus_game(hwnd)
         time.sleep(0.15)
-    return user32.GetForegroundWindow() == hwnd
+    ok = user32.GetForegroundWindow() == hwnd
+    if not ok:
+        log_arrive(f"  phim: KHONG focus duoc cua so {hwnd:#x} — phim co the roi vao noi khac!")
+    return ok
 
 
 def _tap_vk(vk, ext=False):
