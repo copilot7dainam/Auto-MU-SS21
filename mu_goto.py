@@ -279,6 +279,28 @@ SPOTS_FILE = os.path.join(APP_DIR, "mu_goto_spots.json")
 CFG_FILE = os.path.join(APP_DIR, "mu_goto_cfg.json")
 
 
+def _seed_bundled_files():
+    """Ban exe: anh template + calib + spots duoc dong goi trong bundle
+    (_MEIPASS). Lan chay dau, copy nhung file CHUA TON TAI sang canh exe de
+    nguoi dung khong phai chup lai. File da co (ho chinh sua) -> giu nguyen."""
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        return
+    for fn in ("mu_goto_calib.json", "mu_goto_spots.json", "mu_goto_helper.png",
+               "mu_goto_lt.png", "mu_goto_simple_A.png"):
+        src = os.path.join(base, fn)
+        dst = os.path.join(APP_DIR, fn)
+        try:
+            if os.path.exists(src) and not os.path.exists(dst):
+                import shutil
+                shutil.copy2(src, dst)
+        except Exception:
+            pass
+
+
+_seed_bundled_files()
+
+
 # Diem cong khi Reset (sua bang chuot PHAI vao nut Reset).
 RESET_POINTS = {"str": 500, "agi": 500, "vit": 500, "ene": 500, "cmd": 500}
 
@@ -1252,53 +1274,58 @@ def main():
         log_add(f"[*] {m}")
 
     def capture_icon(save_path, label):
-        """Toan man hinh trong suot -> keo chuot vung quanh bieu tuong {label}
-        -> luv template PNG de verify bang hinh anh."""
+        """Chup anh client game -> VE LEN overlay (den 100%) -> keo chuot
+        quanh bieu tuong TRUC TIEP TREN ANH (ty le 1:1, khong qua toa do man
+        hinh → hong khi game off-screen/DPI scaling) -> luu template PNG."""
         shot = grab_client()
         if shot is None:
-            set_status("Khong chup duoc man hinh game.")
+            set_status("Khong chup duoc man hinh game (mo game truoc).")
             return
-        r = find_window_hwnd(ACTIVE_HWND[0])
-        if not r:
-            return
-        (L, T, W, H), _ = r
+        from PIL import Image, ImageTk
         ov = tk.Toplevel(root)
         ov.attributes("-fullscreen", True)
-        ov.attributes("-alpha", 0.3)
         ov.attributes("-topmost", True)
         ov.configure(bg="black", cursor="crosshair")
         ov.lift()
         cv = tk.Canvas(ov, bg="black", highlightthickness=0)
         cv.pack(fill="both", expand=True)
-        cv.create_text(ov.winfo_screenwidth() // 2, 40, fill="white",
-                       font=("Segoe UI", 16, "bold"),
-                       text=f"Keo chuot chon VUNG bieu tuong {label} (Esc de huy)")
+        SW, SH = ov.winfo_screenwidth(), ov.winfo_screenheight()
+        # Phong to (nguyen) neu client nho, de keo vung chinh xac hon
+        scale = 1
+        if shot.width < SW // 2 and shot.height < SH // 2:
+            scale = min(2, SW // shot.width, SH // shot.height)
+        im = shot if scale == 1 else shot.resize(
+            (shot.width * scale, shot.height * scale), Image.LANCZOS)
+        tk_img = ImageTk.PhotoImage(im)
+        ox = (SW - im.width) // 2
+        oy = (SH - im.height) // 2
+        cv.create_image(ox, oy, anchor="nw", image=tk_img)
+        cv._img_ref = tk_img
+        cv.create_text(SW // 2, 24, fill="#FFD60A",
+                       font=("Segoe UI", 15, "bold"),
+                       text=f"Keo vung QUANH bieu tuong {label} tren anh  "
+                            f"(x{scale}, Esc de huy)")
         box = {"x0": 0, "y0": 0, "id": None}
 
         def press(e):
-            box["x0"], box["y0"] = e.x_root, e.y_root
+            box["x0"], box["y0"] = e.x, e.y
             box["id"] = cv.create_rectangle(e.x, e.y, e.x, e.y,
                                             outline="#00FF00", width=2)
 
         def drag(e):
             if box["id"]:
-                cv.coords(box["id"], box["x0"] - ov.winfo_rootx(),
-                          box["y0"] - ov.winfo_rooty(),
-                          e.x_root - ov.winfo_rootx(), e.y_root - ov.winfo_rooty())
+                cv.coords(box["id"], box["x0"], box["y0"], e.x, e.y)
 
         def release(e):
-            x1, y1 = box["x0"], box["y0"]
-            x2, y2 = e.x_root, e.y_root
+            x1, y1 = min(box["x0"], e.x) - ox, min(box["y0"], e.y) - oy
+            x2, y2 = max(box["x0"], e.x) - ox, max(box["y0"], e.y) - oy
             ov.destroy()
-            # toa do man hinh -> toa do trong anh client
-            cx1, cy1 = min(x1, x2) - L, min(y1, y2) - T
-            cx2, cy2 = max(x1, x2) - L, max(y1, y2) - T
-            cx1, cy1 = max(0, cx1), max(0, cy1)
-            cx2, cy2 = min(W, cx2), min(H, cy2)
-            if cx2 - cx1 < 8 or cy2 - cy1 < 8:
-                set_status("Vung chon qua nho, chua luu template.")
+            x1, y1 = max(0, x1 // scale), max(0, y1 // scale)
+            x2, y2 = min(shot.width, x2 // scale), min(shot.height, y2 // scale)
+            if x2 - x1 < 4 or y2 - y1 < 4:
+                set_status(f"Vung chon {x2-x1}x{y2-y1} qua nho (<4px), chua luu.")
                 return
-            shot.crop((cx1, cy1, cx2, cy2)).save(save_path)
+            shot.crop((x1, y1, x2, y2)).save(save_path)
             set_status(f"Da luu template {label}: {save_path}")
 
         def esc(_e):
@@ -1310,35 +1337,47 @@ def main():
         ov.bind("<Escape>", esc)
 
     def capture_point_b():
-        """Che do don gian: toan man hinh trong suot -> BAM 1 DIEM dung tai vi
-        tri nut bat don gian trong cua so game -> luu toa do tuong doi client
-        vao SIMPLE_B_PT (tool se click lai dung diem nay khi thieu anh A)."""
-        r = find_window_hwnd(ACTIVE_HWND[0])
-        if not r:
-            set_status("Khong tim thay cua so game.")
+        """Che do don gian: chup anh client game -> VE LEN overlay -> BAM 1
+        DIEM truc tiep tren anh tai nut bat don gian -> luu toa do tuong doi
+        client vao SIMPLE_B_PT (tool se click lai dung diem nay khi thieu A).
+        Bam tren ANH nen van chinh xac du cua so game nam off-screen."""
+        shot = grab_client()
+        if shot is None:
+            set_status("Khong tim thay cua so game de chup.")
             return
-        (L, T, W, H), _ = r
+        from PIL import Image, ImageTk
         ov = tk.Toplevel(root)
         ov.attributes("-fullscreen", True)
-        ov.attributes("-alpha", 0.3)
         ov.attributes("-topmost", True)
         ov.configure(bg="black", cursor="crosshair")
         ov.lift()
         cv = tk.Canvas(ov, bg="black", highlightthickness=0)
         cv.pack(fill="both", expand=True)
-        cv.create_text(ov.winfo_screenwidth() // 2, 40, fill="#00FF00",
-                       font=("Segoe UI", 16, "bold"),
-                       text="BAM DUNG 1 DIEM tai nut bat don gian trong game (Esc de huy)")
+        SW, SH = ov.winfo_screenwidth(), ov.winfo_screenheight()
+        scale = 1
+        if shot.width < SW // 2 and shot.height < SH // 2:
+            scale = min(2, SW // shot.width, SH // shot.height)
+        im = shot if scale == 1 else shot.resize(
+            (shot.width * scale, shot.height * scale), Image.LANCZOS)
+        tk_img = ImageTk.PhotoImage(im)
+        ox = (SW - im.width) // 2
+        oy = (SH - im.height) // 2
+        cv.create_image(ox, oy, anchor="nw", image=tk_img)
+        cv._img_ref = tk_img
+        cv.create_text(SW // 2, 24, fill="#00FF00",
+                       font=("Segoe UI", 15, "bold"),
+                       text=f"BAM DUNG 1 DIEM tren anh tai nut bat don gian "
+                            f"(x{scale}, Esc de huy)")
 
         def pick(e):
             ov.destroy()
-            x, y = e.x_root - L, e.y_root - T
-            if 0 <= x < W and 0 <= y < H:
+            x, y = (e.x - ox) // scale, (e.y - oy) // scale
+            if 0 <= x < shot.width and 0 <= y < shot.height:
                 SIMPLE_B_PT[0] = (x, y)
                 persist_rows()
                 set_status(f"Diem B don gian: ({x}, {y}) — da luu.")
             else:
-                set_status("Diem click NGOAI cua so game, khong luu.")
+                set_status("Diem click NGOAI anh game, khong luu.")
 
         def esc(_e):
             ov.destroy()

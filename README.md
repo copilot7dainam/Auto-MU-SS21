@@ -16,17 +16,15 @@ lưới walkable 256×256.
 
 ### Cách 1 — file exe (khuyên dùng, không cần cài Python)
 
-Tải **`MU-Goto.exe`** ở mục Releases. Bỏ vào **1 thư mục cùng các file**:
+Tải **`MU-Goto.exe`** ở mục Releases — **1 file duy nhất**, bỏ vào thư mục bất
+kỳ, **right-click → Run as administrator**. Trong exe đã nhúng sẵn:
 
-| File | Nội dung |
-|------|----------|
-| `mu_path.py` | (chỉ bản Python; exe đã nhúng sẵn) |
-| `mu_goto_calib.json` | Ma trận isometric world↔pixel (do `mu_calib.py` đo) |
-| `att_samples/_grid_cache/` | Thư mục cache lưới walkable các map |
+- Lưới bản đồ walkable 85 map + ma trận calib isometric + danh sách spot.
+- **Toàn bộ ảnh template đã chụp** (Helper / Giảm tải / Chế độ đơn giản A).
 
-Chạy **right-click → Run as administrator**. Tool tự tạo
-`mu_goto_cfg.json` / `mu_goto_spots.json` / `mu_goto_simple_A.png`… **ngay cạnh
-file exe**. Mở được UI kể cả khi chưa bật game.
+Lần chạy đầu, tool tự giải phóng các file thiếu ra **cạnh exe** — **không cần
+chụp lại ảnh**. File bạn tự chụp/sửa sau đó luôn được giữ nguyên (không ghi đè).
+Mở được UI kể cả khi chưa bật game.
 
 ### Cách 2 — chạy từ source
 
@@ -39,6 +37,9 @@ Build exe từ source:
 
 ```bash
 pyinstaller --onefile --windowed --name MU-Goto --collect-all customtkinter ^
+  --add-data "att_samples/_grid_cache;att_samples/_grid_cache" ^
+  --add-data "mu_goto_calib.json;." --add-data "mu_goto_spots.json;." ^
+  --add-data "mu_goto_helper.png;." --add-data "mu_goto_lt.png;." --add-data "mu_goto_simple_A.png;." ^
   --hidden-import pymem --hidden-import cv2 --hidden-import numpy --hidden-import PIL mu_goto.py
 ```
 
