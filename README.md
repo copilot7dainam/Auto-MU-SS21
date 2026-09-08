@@ -38,10 +38,15 @@ Build exe từ source:
 ```bash
 pyinstaller --onefile --windowed --name MU-Goto --collect-all customtkinter ^
   --add-data "att_samples/_grid_cache;att_samples/_grid_cache" ^
+  --add-data "att_samples/map_index.json;att_samples" ^
   --add-data "mu_goto_calib.json;." --add-data "mu_goto_spots.json;." ^
   --add-data "mu_goto_helper.png;." --add-data "mu_goto_lt.png;." --add-data "mu_goto_simple_A.png;." ^
   --hidden-import pymem --hidden-import cv2 --hidden-import numpy --hidden-import PIL mu_goto.py
 ```
+
+> **Bắt buộc phải nhúng `att_samples/map_index.json`** — file này ánh xạ MapID →
+> tên file grid (54/85 map có tên không theo quy ước `WorldN_Grid.json`). Thiếu
+> nó, exe không `load_grid` được ("không load được map tọa độ att").
 
 ---
 
