@@ -268,14 +268,65 @@ class MapDropList:
 PROCESS_NAME = "main.exe"
 CUR_X = 0xB80AF60
 CUR_Y = 0xB80AF64
-CALIB_FILE = "mu_goto_calib.json"
-ERR_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mu_goto_errors.log")
-SPOTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mu_goto_spots.json")
-CFG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mu_goto_cfg.json")
+# Thu muc chua FILE THUC (exe dong goi PyInstaller → __file__ chi vao tam
+# _MEIxxx, ghi config o do se MAT → dung thu muc cua .exe).
+APP_DIR = (os.path.dirname(os.path.abspath(sys.argv[0]))
+           if getattr(sys, "frozen", False)
+           else os.path.dirname(os.path.abspath(__file__)))
+CALIB_FILE = os.path.join(APP_DIR, "mu_goto_calib.json")
+ERR_LOG = os.path.join(APP_DIR, "mu_goto_errors.log")
+SPOTS_FILE = os.path.join(APP_DIR, "mu_goto_spots.json")
+CFG_FILE = os.path.join(APP_DIR, "mu_goto_cfg.json")
 
 
 # Diem cong khi Reset (sua bang chuot PHAI vao nut Reset).
 RESET_POINTS = {"str": 500, "agi": 500, "vit": 500, "ene": 500, "cmd": 500}
+
+# "Che do don gian" — CO CHE THU 3, tach rieng hoan toan voi Home/Ctrl+F
+# (2 co che Home/Ctrl+F VAN GIU NGUYEN nhu cu: nhan phim + kiem tra anh icon).
+#   A = anh chi bao CHE DO DON GIAN DA BAT (template tren man hinh game)
+#   B = DIEM CO DINH trong cua so game (toa do tuong doi client) — click thang
+#       vao do, khong can tim anh B nua.
+# vong lap: khong thay A -> click DIEM B -> 1s sau kiem tra lai -> lap vo han.
+# Chay NGAY SAU khi thoat Giam tai; chua cau hinh A + B -> tu dong bo qua.
+SIMPLE_A_IMG = os.path.join(APP_DIR, "mu_goto_simple_A.png")
+SIMPLE_B_PT = [None]                # (x, y) tuong doi client — luu vao cfg
+
+
+def simple_ready():
+    """True neu da cau hinh du anh A + diem B cho che do don gian."""
+    return os.path.exists(SIMPLE_A_IMG) and SIMPLE_B_PT[0] is not None
+
+
+def ensure_simple_mode(hwnd=None):
+    """Co che thu 3 — kiem tra CHE DO DON GIAN da bat chua: thay anh A -> OK.
+    Khong thay A -> click DIEM B (toa do co dinh trong cua so game) -> 1s sau
+    kiem tra lai -> van chua -> bam lai... LAP VO HAN toi khi thay A
+    (PgUp thoat). Chua cau hinh A + diem B -> bo qua (True)."""
+    if not simple_ready():
+        return True
+    i = 0
+    while True:
+        if STOP_REQUESTED[0] or check_stop_key():
+            return False
+        p = icon_present(SIMPLE_A_IMG, hwnd=hwnd)
+        if p is None:
+            return True                          # anh A hong -> bo qua
+        if p:
+            log_arrive("  Don gian: thay anh A -> da bat, cho 1s roi di tiep.")
+            time.sleep(1.0)
+            return True
+        i += 1
+        r = find_window_hwnd(hwnd or ACTIVE_HWND[0])
+        if not r:
+            time.sleep(1.0)
+            continue
+        (L, T, W, H), _ = r
+        bx, by = SIMPLE_B_PT[0]
+        click_at(L + bx, T + by, right=False, hwnd=hwnd)
+        log_arrive(f"  Don gian: chua thay A -> bam DIEM B ({bx}, {by})"
+                   f" lan {i}, 1s sau kiem tra")
+        time.sleep(1.0)
 
 
 def load_cfg():
@@ -291,6 +342,12 @@ def load_cfg():
                 RESET_POINTS[k] = int(pts.get(k, RESET_POINTS[k]))
             except (TypeError, ValueError):
                 pass
+        bp = d.get("simple_b")
+        if isinstance(bp, (list, tuple)) and len(bp) == 2:
+            try:
+                SIMPLE_B_PT[0] = (int(bp[0]), int(bp[1]))
+            except (TypeError, ValueError):
+                pass
         return d.get("rows", [])
     except Exception:
         return []
@@ -298,8 +355,10 @@ def load_cfg():
 
 def save_cfg(rows):
     try:
-        json.dump({"rows": rows, "reset_points": RESET_POINTS},
-                  open(CFG_FILE, "w", encoding="utf-8"),
+        d = {"rows": rows, "reset_points": RESET_POINTS}
+        if SIMPLE_B_PT[0]:
+            d["simple_b"] = list(SIMPLE_B_PT[0])
+        json.dump(d, open(CFG_FILE, "w", encoding="utf-8"),
                   ensure_ascii=False, indent=2)
     except Exception:
         pass
@@ -343,6 +402,8 @@ def log_err(msg):
 # HWND cua cua so game (set trong main()). Dung de click truc tiep vao game
 # bang PostMessage ma khong can foreground.
 GHWND = None
+# Cua so game dang duoc tool dieu khien (hwnd). Dong bo voi GHWND.
+ACTIVE_HWND = [None]
 
 # Ten map S21 theo World ID doc tu memory (offset duoi). Dung de hien thi ten
 # map thuc te nhan vat dang dung. Bang nay lay tu Map ID.txt, da xac nhan voi
@@ -533,11 +594,19 @@ def find_window():
     return list(found.values())[0]
 
 
-def find_window_hwnd():
+def find_window_hwnd(hwnd=None):
     """Tra ve (client_rect_screen, hwnd) cua cua so game.
-    client_rect = vung render THAT (bo title bar + vien), quy doi sang toa do
-    man hinh qua ClientToScreen. Tam client rect = vi tri nhan vat (MU giu
-    nhan vat o giua client area). Tra ve None neu khong tim thay."""
+    hwnd=None -> cua so game dau tien tim thay; hwnd cho truoc -> tra rect cua
+    dung cua so do. client_rect = vung render THAT (bo title bar + vien), quy
+    doi sang toa do man hinh qua ClientToScreen. Tra ve None neu khong co."""
+    if hwnd:
+        if not user32.IsWindow(hwnd):
+            return None
+        cr = wt.RECT()
+        user32.GetClientRect(hwnd, ctypes.byref(cr))
+        tl = wt.POINT(0, 0)
+        user32.ClientToScreen(hwnd, ctypes.byref(tl))
+        return (tl.x, tl.y, cr.right, cr.bottom), hwnd
     targets = set()
     for p in pymem.process.list_processes():
         try:
@@ -631,32 +700,29 @@ def install_mouse_hook():
         _hook_handle[0] = None
 
 
-def focus_game():
-    """Dem cua so game len foreground de cac phim/chuot gui toi dung game
-    (khong phai cua so Tkinter cua tool).
-
-    Windows chi cho SetForegroundWindow neu tien trinh dang co foreground, nen
-    SetForegroundWindow don thuong thuong that bai. Trick chuan:
-      - AttachThreadInput voi thread foreground hien tai
-      - Gui Alt (VK_MENU) xuong + len de 'unlock' foreground cua tien trinh khac
-      - SetForegroundWindow + ShowWindow(SW_RESTORE)
-      - Detach thread.
-    Tra ve HWND cua cua so game, hoac None neu khong tim thay."""
-    procs = pymem.process.list_processes()
-    target_pids = {p.th32ProcessID for p in procs
-                   if p.szExeFile.decode('utf-8', 'ignore').lower() == PROCESS_NAME.lower()}
-    GW = [None]
-    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
-    def finder(hwnd, _):
-        if not user32.IsWindowVisible(hwnd):
+def focus_game(hwnd=None):
+    """Dem cua so game len foreground de phim/chuot gui toi dung game.
+    hwnd=None -> ACTIVE_HWND[0] (cua so dang lam viec), khong co thi lay cua so
+    game dau tien. Trick AttachThreadInput + Alt de SetForegroundWindow khong
+    bi Windows chan. Tra ve HWND da focus."""
+    if not hwnd:
+        hwnd = ACTIVE_HWND[0]
+    if not hwnd:
+        procs = pymem.process.list_processes()
+        target_pids = {p.th32ProcessID for p in procs
+                       if p.szExeFile.decode('utf-8', 'ignore').lower() == PROCESS_NAME.lower()}
+        GW = [None]
+        @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+        def finder(hwnd, _):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            pid = wt.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in target_pids:
+                GW[0] = hwnd
             return True
-        pid = wt.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value in target_pids:
-            GW[0] = hwnd
-        return True
-    user32.EnumWindows(finder, 0)
-    hwnd = GW[0]
+        user32.EnumWindows(finder, 0)
+        hwnd = GW[0]
     if not hwnd:
         return None
     try:
@@ -681,29 +747,52 @@ def focus_game():
     return hwnd
 
 
-def send_home():
-    """Gui phim Home (Helper). Dung keybd_event cung ho mouse_event."""
-    VK_HOME = 0x24
-    focus_game()
-    time.sleep(0.10)
-    user32.keybd_event(VK_HOME, 0, 0, 0)       # keydown
+def _ensure_foreground(hwnd, tries=3):
+    """Chac chan cua so hwnd THUC SU la foreground truoc khi gui phim
+    (SetForegroundWindow doi khi that bai im lang -> phim roi vao cua so khac).
+    Tra True khi da la foreground."""
+    if not hwnd:
+        return True
+    for _ in range(tries):
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+        focus_game(hwnd)
+        time.sleep(0.15)
+    return user32.GetForegroundWindow() == hwnd
+
+
+def _tap_vk(vk, ext=False):
+    """Nhan 1 phim co scan code that (MapVirtualKeyW) — game doc scan code qua
+    DirectInput, keybd_event scan=0 co the bi bo qua (nguyen nhan Ctrl+F
+    khong toi duoc cua so game)."""
+    scan = user32.MapVirtualKeyW(vk, 0)
+    flag = 0x0001 if ext else 0x0000           # KEYEVENTF_EXTENDEDKEY
+    user32.keybd_event(vk, scan, flag, 0)
     time.sleep(0.05)
-    user32.keybd_event(VK_HOME, 0, 0x0002, 0)  # keyup
+    user32.keybd_event(vk, scan, flag | 0x0002, 0)
+    time.sleep(0.05)
 
 
-HELPER_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mu_goto_helper.png")
-LT_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mu_goto_lt.png")
-CHAT_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mu_goto_chat.png")
+def send_home(hwnd=None):
+    """Gui phim Home (Helper). Dam bao dung cua so game dang foreground."""
+    _ensure_foreground(hwnd)
+    time.sleep(0.10)
+    _tap_vk(0x24)                               # VK_HOME
+
+
+HELPER_IMG = os.path.join(APP_DIR, "mu_goto_helper.png")
+LT_IMG = os.path.join(APP_DIR, "mu_goto_lt.png")
+CHAT_IMG = os.path.join(APP_DIR, "mu_goto_chat.png")
 # Danh sach icon can nhan dien (ten hien thi, duong dan file template).
 # Them muc moi vao day -> tu dong xuat hien trong modal "Chup anh".
 ICON_ITEMS = [("Helper", HELPER_IMG), ("Giảm tải", LT_IMG)]
 
 
-def grab_client():
+def grab_client(hwnd=None):
     """Chup vung client cua game -> PIL.Image (RGB). None neu hong."""
     try:
         from PIL import ImageGrab
-        r = find_window_hwnd()
+        r = find_window_hwnd(hwnd or ACTIVE_HWND[0])
         if not r:
             return None
         (L, T, W, H), _ = r
@@ -714,15 +803,16 @@ def grab_client():
         return None
 
 
-def icon_present(img_path, thresh=0.80):
-    """True/False: template co/khong hien tren man hinh game (cv2 matchTemplate).
+def icon_present(img_path, thresh=0.90, hwnd=None):
+    """True/False: template co/khong hien tren vung CLIENT cua cua so game
+    (cv2 matchTemplate, khong log, khong luu file).
     None: chua co template hoac loi -> khong kiem tra duoc (bo qua verify)."""
     try:
         import cv2, numpy as np
         tpl = cv2.imread(img_path)
         if tpl is None:
             return None
-        shot = grab_client()
+        shot = grab_client(hwnd)
         if shot is None:
             return None
         img = cv2.cvtColor(np.asarray(shot), cv2.COLOR_RGB2BGR)
@@ -734,81 +824,133 @@ def icon_present(img_path, thresh=0.80):
         return None
 
 
-def send_home_verified(max_tries=5):
-    """Nhan Home, KIEM TRA bieu tuong Helper xuat hien. Chua thay -> nhan lai
-    (toi da max_tries lan). Tra True khi da thay (hoac khong co template)."""
-    for i in range(max_tries):
-        send_home()
-        for _ in range(10):                      # cho toi 2s de icon hien len
-            time.sleep(0.2)
-            p = icon_present(HELPER_IMG)
-            if p is None:
-                return True                      # khong co template -> bo qua
-            if p:
-                log_arrive("  Helper: da thay bieu tuong tren man hinh.")
-                return True
-        log_arrive(f"  Helper: chua thay bieu tuong -> nhan lai Home "
-                   f"({i + 2}/{max_tries + 1})")
-    log_arrive("  Helper: VAN khong thay bieu tuong sau nhieu lan.")
-    return False
-
-
-def send_ctrl_f():
-    """Gui phim Ctrl+F (Giam tai). Dung keybd_event."""
-    VK_CONTROL = 0x11
-    VK_F = 0x46
-    focus_game()
-    time.sleep(0.10)
-    user32.keybd_event(VK_CONTROL, 0, 0, 0)    # Ctrl down
-    time.sleep(0.05)
-    user32.keybd_event(VK_F, 0, 0, 0)          # F down
-    time.sleep(0.05)
-    user32.keybd_event(VK_F, 0, 0x0002, 0)     # F up
-    time.sleep(0.05)
-    user32.keybd_event(VK_CONTROL, 0, 0x0002, 0)  # Ctrl up
-
-
-def _wait_icon(img_path, want, max_tries, name):
-    """Dam bao trang thai icon (muon=True: ON/co icon / False: OFF/khong icon).
-    KIEM TRA TRUOC: dat san thi khong nhan (nhan Ctrl+F khi OFF se BAT nham).
-    Chua dat -> nhan Ctrl+F, kiem tra lai, toi da max_tries lan.
-    Tra True khi dat (hoac khong co template -> bo qua verify)."""
-    for i in range(max_tries):
-        p = icon_present(img_path)
+def send_home_verified(hwnd=None):
+    """Toi duoc dich: 1s sau -> co che Home nhu cu: nhan Home -> 1s -> kiem
+    tra anh Helper -> chua co -> nhan lai -> ... LAP VO HAN toi khi thay
+    (PgUp thoat). (Che do don gian KHONG o day — chay ngay sau thoat Giam
+    tai trong send_ctrl_f_off, trung o day la thua.)"""
+    time.sleep(1.0)
+    i = 0
+    while True:
+        if STOP_REQUESTED[0] or check_stop_key():
+            return False
+        p = icon_present(HELPER_IMG, hwnd=hwnd)
         if p is None:
             return True                          # khong co template -> bo qua
-        if p == want:
-            if i == 0:
-                log_arrive(f"  {name}: san dat -> khong can nhan.")
-            else:
-                log_arrive(f"  {name}: icon {'da hien' if want else 'da mat'} -> OK.")
+        if p:
+            log_arrive("  Helper: da thay bieu tuong -> cho 1s roi di tiep.")
+            time.sleep(1.0)
             return True
-        send_ctrl_f()
-        for _ in range(10):                      # toi da 2s moi lan
-            time.sleep(0.2)
-            p = icon_present(img_path)
-            if p is None or p == want:
-                log_arrive(f"  {name}: icon {'da hien' if want else 'da mat'} -> OK.")
-                return True
-        log_arrive(f"  {name}: chua dat -> nhan lai Ctrl+F ({i + 2}/{max_tries + 1})")
-    log_arrive(f"  {name}: VAN chua dat sau nhieu lan.")
-    return False
+        i += 1
+        log_arrive(f"  Helper: chua thay -> nhan Home lan {i}, 1s sau kiem tra")
+        send_home(hwnd)
+        time.sleep(1.0)
 
 
-def send_ctrl_f_on(max_tries=5):
-    """Bat Giam tai: Ctrl+F den khi bieu tuong Giam tai XUAT HIEN."""
-    return _wait_icon(LT_IMG, True, max_tries, "Giam tai ON")
+def send_ctrl_f(hwnd=None):
+    """Gui phim Ctrl+F (Giam tai) DUNG vao cua so hwnd: giu Ctrl + nhan F co
+    scan code that. KHONG gui Esc — Esc gay loi toan bo qua trinh.
+    Dam bao foreground: hwnd thieu -> dung cua so ACTIVE; khong focus duoc
+    -> log canh bao (phim se roi vao cua so khac)."""
+    hwnd = hwnd or ACTIVE_HWND[0]
+    if not _ensure_foreground(hwnd):
+        log_arrive(f"  Ctrl+F: KHONG focus duoc cua so {hwnd:#x} — phim co the roi vao noi khac!")
+    time.sleep(0.10)
+    scan_ctrl = user32.MapVirtualKeyW(0x11, 0)  # VK_CONTROL
+    scan_f = user32.MapVirtualKeyW(0x46, 0)     # VK_F
+    user32.keybd_event(0x11, scan_ctrl, 0, 0)   # Ctrl down
+    time.sleep(0.06)
+    user32.keybd_event(0x46, scan_f, 0, 0)      # F down
+    time.sleep(0.06)
+    user32.keybd_event(0x46, scan_f, 0x0002, 0) # F up
+    time.sleep(0.06)
+    user32.keybd_event(0x11, scan_ctrl, 0x0002, 0)  # Ctrl up
 
 
-def send_ctrl_f_off(max_tries=5):
-    """Tat Giam tai: Ctrl+F den khi bieu tuong Giam tai BIEN MAT."""
-    return _wait_icon(LT_IMG, False, max_tries, "Giam tai OFF")
+# Trang thai Giam tai theo cua so (tool TU NHHO): hwnd -> True/False/None.
+LT_ON = {}
+
+
+def send_ctrl_f_on(hwnd=None):
+    """Vao Giam tai theo dung spec:
+    tim hinh → KHONG thay → gui Ctrl+F → 1s sau kiem tra → THAY → dung.
+    (Chua thay → bam lai...) lap lai cho toi khi THAY icon.
+    Moi lan bam deu dam bao Ctrl+F roi DUNG cua so hwnd (focus + ACTIVE_HWND).
+    TOI DA 10 LAN de khong ket khi phim khong toi; ghi nho ON/OFF theo t."""
+    hwnd = hwnd or ACTIVE_HWND[0]
+    i = 0
+    while True:
+        if STOP_REQUESTED[0] or check_stop_key():
+            return False
+        p = icon_present(LT_IMG, hwnd=hwnd)
+        if p is None:
+            LT_ON[hwnd] = True
+            return True                          # khong co template -> bo qua
+        if p:
+            LT_ON[hwnd] = True
+            log_arrive("  Giam tai ON: da thay bieu tuong -> cho 1s roi di tiep.")
+            time.sleep(1.0)
+            return True
+        if i >= 10:
+            LT_ON[hwnd] = None
+            log_arrive("  Giam tai ON: 10 LAN van khong thay icon → bo qua, "
+                       "chay tiep (kiem tra template LT / focus cua so).")
+            return False
+        i += 1
+        log_arrive(f"  Giam tai ON: chua thay -> nhan Ctrl+F lan {i}"
+                   f" (vao cua so {hwnd:#x}), 1s sau kiem tra")
+        send_ctrl_f(hwnd)
+        time.sleep(1.0)
+
+
+def send_ctrl_f_off(hwnd=None):
+    """Thoat Giam tai theo dung spec:
+    tim hinh → THAY → gui Ctrl+F → 1s sau kiem tra → KHONG thay → dung.
+    (Van thay → bam lai...) lap lai cho toi khi KHONG con thay icon.
+    Moi lan bam deu dam bao Ctrl+F roi DUNG cua so hwnd.
+    TOI DA 10 LAN de khong ket khi phim khong toi.
+    Tra True khi icon da mat / khong co template; False khi 10 lan khong xong.
+    CHE DO DON GIAN khong o day — run_visit goi RIENG sau khi off thanh cong."""
+    hwnd = hwnd or ACTIVE_HWND[0]
+    i = 0
+    while True:
+        if STOP_REQUESTED[0] or check_stop_key():
+            return False
+        p = icon_present(LT_IMG, hwnd=hwnd)
+        if p is None:
+            LT_ON[hwnd] = False                  # khong co template -> bo qua
+            return True
+        if not p:
+            LT_ON[hwnd] = False
+            log_arrive("  Giam tai OFF: icon da mat -> cho 1s roi di tiep.")
+            time.sleep(1.0)
+            return True
+        if i >= 10:
+            LT_ON[hwnd] = None
+            log_arrive("  Giam tai OFF: 10 LAN van con thay icon → bo qua, "
+                       "chay tiep (kiem tra template LT / focus cua so).")
+            return False
+        i += 1
+        log_arrive(f"  Giam tai OFF: con thay -> nhan Ctrl+F lan {i}"
+                   f" (vao cua so {hwnd:#x}), 1s sau kiem tra")
+        send_ctrl_f(hwnd)
+        time.sleep(1.0)
+
+
+# log_arrive duoc goi tu cac ham CAP MODULE (send_home_verified,
+# send_ctrl_f_on/off...) — ma `root` / `_log_add` chi ton tai BEN TRONG main().
+# main() nap 2 gia tri nay vao day khi UI san sang.
+ROOT = [None]
+LOG_HOOK = [None]
 
 
 def log_arrive(msg):
-    """Ghi log an toan tu thread nen (goi tu ben trong vong lap)."""
+    """Ghi log an toan tu thread nen — CHI vao logbox trong ung dung
+    (khong file, khong console). _log_add(text, done, color): du 3 tham so."""
     try:
-        root.after(0, lambda: _log_add(msg, False))
+        r, fn = ROOT[0], LOG_HOOK[0]
+        if r is not None and fn is not None:
+            r.after(0, lambda: fn(msg, False, None))
     except Exception:
         pass
 
@@ -901,20 +1043,51 @@ def load_matrix():
 def main():
     global GHWND
     enable_debug()
-    pm = pymem.Pymem(PROCESS_NAME)
-    rect = find_window_hwnd()
-    if not rect:
-        raise RuntimeError("Khong tim thay cua so main.exe")
-    (L, T, W, H), GHWND = rect
-    cx_screen, cy_screen = L + ANCHOR_X, T + ANCHOR_Y
     A, inv = load_matrix()
     print(f"[calib] A={A}")
     print(f"[calib] inv={inv}")
-    print(f"[window] {W}x{H} tai ({L},{T}); tam nhan vat=({cx_screen},{cy_screen})")
 
-    # Focus cua so game
-    if GHWND:
-        user32.SetForegroundWindow(GHWND)
+    # --- Da cua so: moi cua so game (pid) co Pymem rieng ---
+    PMS = {}                      # pid -> pymem.Pymem
+    ARECT = [None]                # client rect cua cua so dang ACTIVE
+    ACX = [0]
+    ACY = [0]
+
+    def get_pm_for(hwnd):
+        """Pymem gan voi pid cua hwnd (mo lazy, tu choi khi hong)."""
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        pid = pid.value
+        if pid not in PMS:
+            try:
+                PMS[pid] = pymem.Pymem(pid)
+            except Exception:
+                return None
+        return PMS[pid]
+
+    def set_active(hwnd):
+        """Chuyen cua so lam viec: cap nhat GHWND/ACTIVE_HWND/rect/anchor."""
+        global GHWND
+        ACTIVE_HWND[0] = hwnd
+        GHWND = hwnd
+        r = find_window_hwnd(hwnd)
+        if r:
+            (nL, nT, nW, nH), _ = r
+            ARECT[0] = (nL, nT, nW, nH)
+            ACX[0], ACY[0] = nL + ANCHOR_X, nT + ANCHOR_Y
+            print(f"[active] {nW}x{nH} tai ({nL},{nT}); tam=({ACX[0]},{ACY[0]})")
+
+    # Mo cua so game dau tien lam active — KHONG raise neu chua mo game:
+    # UI van phai hien len duoc; sync_bars/train_chain se tu bat kip cua so
+    # game mo sau nay.
+    _w0 = find_window_hwnd()
+    if _w0:
+        (L, T, W, H), _hwnd0 = _w0
+        set_active(_hwnd0)
+        if GHWND:
+            user32.SetForegroundWindow(GHWND)
+    else:
+        print("[window] Chua mo game — UI van chay; mo main.exe roi thao tac.")
 
     running = [False]
 
@@ -951,14 +1124,14 @@ def main():
         f_body = ctk.CTkFont(family="Segoe UI", size=13)
         f_btn = ctk.CTkFont(family="Segoe UI", size=14, weight="bold")
         f_small = ctk.CTkFont(family="Segoe UI", size=11)
-        f_bar = ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
+        f_bar = ctk.CTkFont(family="Segoe UI", size=10, weight="bold")
     else:
         f_title = tkfont.Font(family="Segoe UI", size=16, weight="bold")
         f_sub = tkfont.Font(family="Segoe UI", size=12)
         f_body = tkfont.Font(family="Segoe UI", size=13)
         f_btn = tkfont.Font(family="Segoe UI", size=14, weight="bold")
         f_small = tkfont.Font(family="Segoe UI", size=11)
-        f_bar = tkfont.Font(family="Segoe UI", size=12, weight="bold")
+        f_bar = tkfont.Font(family="Segoe UI", size=10, weight="bold")
         try:
             ttk.Style().theme_use("clam")
         except Exception:
@@ -985,12 +1158,14 @@ def main():
 
     def btn_primary(parent, text, cmd=None, **kw):
         kw.setdefault("command", cmd)
+        kw.setdefault("font", f_btn)
         if USE_CTK:
-            return ctk.CTkButton(parent, text=text,
-                                 font=f_btn, height=36, corner_radius=10,
+            kw.setdefault("height", 36)          # px (tk.Button: height = SO DONG!)
+            return ctk.CTkButton(parent, text=text, corner_radius=10,
                                  fg_color=ACCENT, hover_color=ACCENT_HOVER,
                                  text_color="#FFFFFF", **kw)
-        return tk.Button(parent, text=text, font=f_btn,
+        kw.pop("height", None)
+        return tk.Button(parent, text=text,
                          bg=ACCENT, fg="#FFFFFF", activebackground=ACCENT_HOVER,
                          activeforeground="#FFFFFF", relief="flat", bd=0, **kw)
 
@@ -1029,8 +1204,8 @@ def main():
                else tk.Frame(root, bg=BG))
     top_bar.grid(row=0, column=0, sticky="ew", padx=PAD, pady=(PAD, 6))
 
-    # --- Nut Train cung hang voi cac tab ---
-    btn_train = btn_primary(top_bar, "▶  Train",
+    # --- Nut Train cung hang voi cac tab (height=24 + font nhu header tab) ---
+    btn_train = btn_primary(top_bar, "▶  Train", height=24, font=f_body,
                             command=lambda: toggle_train())
     btn_train.pack(side="left", padx=(0, 10))
 
@@ -1083,7 +1258,7 @@ def main():
         if shot is None:
             set_status("Khong chup duoc man hinh game.")
             return
-        r = find_window_hwnd()
+        r = find_window_hwnd(ACTIVE_HWND[0])
         if not r:
             return
         (L, T, W, H), _ = r
@@ -1134,9 +1309,55 @@ def main():
         cv.bind("<ButtonRelease-1>", release)
         ov.bind("<Escape>", esc)
 
+    def capture_point_b():
+        """Che do don gian: toan man hinh trong suot -> BAM 1 DIEM dung tai vi
+        tri nut bat don gian trong cua so game -> luu toa do tuong doi client
+        vao SIMPLE_B_PT (tool se click lai dung diem nay khi thieu anh A)."""
+        r = find_window_hwnd(ACTIVE_HWND[0])
+        if not r:
+            set_status("Khong tim thay cua so game.")
+            return
+        (L, T, W, H), _ = r
+        ov = tk.Toplevel(root)
+        ov.attributes("-fullscreen", True)
+        ov.attributes("-alpha", 0.3)
+        ov.attributes("-topmost", True)
+        ov.configure(bg="black", cursor="crosshair")
+        ov.lift()
+        cv = tk.Canvas(ov, bg="black", highlightthickness=0)
+        cv.pack(fill="both", expand=True)
+        cv.create_text(ov.winfo_screenwidth() // 2, 40, fill="#00FF00",
+                       font=("Segoe UI", 16, "bold"),
+                       text="BAM DUNG 1 DIEM tai nut bat don gian trong game (Esc de huy)")
+
+        def pick(e):
+            ov.destroy()
+            x, y = e.x_root - L, e.y_root - T
+            if 0 <= x < W and 0 <= y < H:
+                SIMPLE_B_PT[0] = (x, y)
+                persist_rows()
+                set_status(f"Diem B don gian: ({x}, {y}) — da luu.")
+            else:
+                set_status("Diem click NGOAI cua so game, khong luu.")
+
+        def esc(_e):
+            ov.destroy()
+
+        cv.bind("<Button-1>", pick)
+        ov.bind("<Escape>", esc)
+
+    def center_on_root(dlg, w=None, h=None):
+        """Dat dlg vao GIUA cua so tool (tinh sau khi ep layout xong)."""
+        dlg.update_idletasks()
+        dw = w or dlg.winfo_reqwidth()
+        dh = h or dlg.winfo_reqheight()
+        rx = root.winfo_rootx() + (root.winfo_width() - dw) // 2
+        ry = root.winfo_rooty() + (root.winfo_height() - dh) // 2
+        dlg.geometry(f"+{max(rx, 0)}+{max(ry, 0)}")
+
     def open_capture_dialog():
-        """Modal chon loai anh can chup (Helper / Giam tai / ...). Danh sach
-        lay tu ICON_ITEMS -> de dang them/sua muc khac trong code."""
+        """Modal chon loai anh can chup (Helper / Giam tai / ...), hien xem
+        truoc anh dang luu. Danh sach lay tu ICON_ITEMS."""
         dlg = tk.Toplevel(root)
         dlg.title("Chọn ảnh cần chụp")
         dlg.transient(root)
@@ -1145,16 +1366,56 @@ def main():
         tk.Label(dlg, text="Chọn icon để chụp từ màn hình game:",
                  font=f_body, fg=TEXT, bg=CARD).pack(padx=14, pady=(12, 6))
         for name, path in ICON_ITEMS:
+            row = tk.Frame(dlg, bg=CARD)
+            row.pack(fill="x", padx=14, pady=3)
             exists = os.path.exists(path)
-            b = tk.Button(dlg, text=f"📷  {name}" + ("  ✓" if exists else "  (chưa chụp)"),
+            b = tk.Button(row, text=f"📷  {name}" + ("  ✓" if exists else "  (chưa chụp)"),
                           font=f_body, fg=TEXT, bg="#F2F2F7",
                           activebackground="#E5E5EA", relief="flat", bd=0, anchor="w",
                           command=lambda n=name, p=path: (dlg.destroy(),
                                                           capture_icon(p, n)))
-            b.pack(fill="x", padx=14, pady=3, ipady=6)
+            b.pack(side="left", fill="x", expand=True, ipady=6)
+            # Anh xem truoc (phong to 3x de de nhin)
+            if exists:
+                try:
+                    from PIL import Image, ImageTk
+                    im = Image.open(path)
+                    im = im.resize((max(1, im.width * 3), max(1, im.height * 3)),
+                                   Image.NEAREST)
+                    tk_img = ImageTk.PhotoImage(im)
+                    lbl = tk.Label(row, image=tk_img, bg=CARD, bd=1,
+                                   relief="solid")
+                    lbl.image = tk_img   # giu reference
+                    lbl.pack(side="right", padx=(8, 0))
+                except Exception:
+                    pass
+        # --- Che do don gian (co che thu 3): anh A + DIEM B ---
+        tk.Label(dlg, text="Chế độ đơn giản (kiểm tra ngay sau khi thoát giảm tải):",
+                 font=f_body, fg=TEXT, bg=CARD).pack(padx=14, pady=(10, 2), anchor="w")
+        tk.Label(dlg, text="A = ảnh khi chế độ ĐÃ BẬT · B = điểm bấm trong cửa sổ game",
+                 font=f_small, fg=MUTED, bg=CARD).pack(padx=14, anchor="w")
+        srow = tk.Frame(dlg, bg=CARD)
+        srow.pack(fill="x", padx=14, pady=3)
+        got_a = os.path.exists(SIMPLE_A_IMG)
+        sb = tk.Button(srow, text=("📷  Đơn giản — ảnh A"
+                                   + ("  ✓" if got_a else "  (chưa chụp)")),
+                       font=f_small, fg="#FFFFFF" if got_a else MUTED,
+                       bg=ACCENT if got_a else "#F2F2F7",
+                       activebackground=ACCENT_HOVER, relief="flat", bd=0,
+                       command=lambda: (dlg.destroy(),
+                                        capture_icon(SIMPLE_A_IMG, "Đơn giản — ảnh A")))
+        sb.pack(side="left", padx=(0, 6), ipady=6, ipadx=4)
+        got_b = SIMPLE_B_PT[0] is not None
+        bb = tk.Button(srow, text=(f"Điểm B ✓ {SIMPLE_B_PT[0]}" if got_b else "Điểm B"),
+                       font=f_small, fg="#FFFFFF" if got_b else MUTED,
+                       bg=ACCENT if got_b else "#F2F2F7",
+                       activebackground=ACCENT_HOVER, relief="flat", bd=0,
+                       command=lambda: (dlg.destroy(), capture_point_b()))
+        bb.pack(side="left", padx=(0, 6), ipady=6, ipadx=4)
         tk.Button(dlg, text="Đóng", command=dlg.destroy, font=f_body,
                   fg=MUTED, bg=CARD, relief="flat", bd=0
                   ).pack(padx=14, pady=(6, 12), anchor="e")
+        center_on_root(dlg)
 
     # ---------- TAB 1: DIEU KHIEN (chi chua cac thanh tien trinh) ----------
     tab_ctrl = card(content)
@@ -1167,7 +1428,7 @@ def main():
                   if USE_CTK else tk.Frame(sidebar, bg="#FFFFFF"))
     bars_frame.pack(fill="x", padx=PAD, pady=(0, 6))
     BAR_W = 460 - 2 * PAD - 24         # card - le - vien
-    BAR_H = 36
+    BAR_H = 22
     BAR_R = 10
 
     class Bar:
@@ -1175,9 +1436,11 @@ def main():
         def __init__(self, parent):
             # width de nho (100): chieu rong that do fill="x" + Configure quyet
             # dinh; khai bao BAR_W lan ra se tran card khi tab an/chiEN.
-            self.c = tk.Canvas(parent, width=100, height=BAR_H,
+            self.h = BAR_H
+            self.r = BAR_R
+            self.c = tk.Canvas(parent, width=100, height=self.h,
                                highlightthickness=0, bg="#FFFFFF")
-            self.c.pack(fill="x", pady=3)
+            self.c.pack(fill="x", pady=2)
             self.track = None
             self.fill = None
             self.txt = None
@@ -1186,6 +1449,16 @@ def main():
             self._color = SUCCESS
             self._text = ""
             self.c.bind("<Configure>", self._resize)
+            self._draw()
+
+        def compact(self, thin):
+            """thin=True: bar mong (14px) khi nhieu cua so; False: 22px."""
+            h = 14 if thin else BAR_H
+            if h == self.h:
+                return
+            self.h = h
+            self.r = 7 if thin else BAR_R
+            self.c.configure(height=h)
             self._draw()
 
         def _rrect(self, x1, y1, x2, y2, r, color):
@@ -1201,16 +1474,16 @@ def main():
 
         def _draw(self):
             self.c.delete("all")
-            w, h = self._w, BAR_H
-            self._rrect(0, 0, w, h, BAR_R, "#E9E9EE")
+            w, h, r = self._w, self.h, self.r
+            self._rrect(0, 0, w, h, r, "#E9E9EE")
             fw = int(w * self._pct)
-            if fw > 2 * BAR_R:
-                self._rrect(0, 0, fw, h, BAR_R, self._color)
+            if fw > 2 * r:
+                self._rrect(0, 0, fw, h, r, self._color)
             elif fw > 0:
                 self.c.create_rectangle(0, 0, fw, h, fill=self._color,
                                         outline="")
             if self._text:
-                self.c.create_text(12, h / 2.0, anchor="w", text=self._text,
+                self.c.create_text(8, h / 2.0, anchor="w", text=self._text,
                                    font=f_bar, fill="#FFFFFF")
 
         def set(self, p, color, text=None):
@@ -1275,10 +1548,17 @@ def main():
             nm, lv = read_title(hwnd)
             p, col = bar_pct_color(lv)
             txt = f"{nm or '?'} · Lv {lv if lv is not None else '?'}"
-            if hwnd == GHWND:
-                txt += f"  —  {fmt_live(LIVE_POS[0] or 0, LIVE_POS[1] or 0)}"
+            if hwnd == ACTIVE_HWND[0]:
+                pm = get_pm_for(hwnd)
+                xy = rd_pos(pm) if pm else (None, None)
+                if xy[0] is not None:
+                    txt += f"  —  {fmt_live(xy[0], xy[1])}"
                 bar, cur = BARS[hwnd], BARS[hwnd].c
             BARS[hwnd].set(p, col, txt)
+        # >5 cua so: bar mong hon de du 10 cai trong tab
+        thin = len(wins) > 5
+        for b in BARS.values():
+            b.compact(thin)
         root.after(2000, sync_bars)
 
     def toggle_train():
@@ -1320,6 +1600,7 @@ def main():
                   bg=ACCENT, fg="#FFFFFF", activebackground=ACCENT_HOVER,
                   relief="flat", bd=0).grid(row=len(keys), column=0, columnspan=2,
                                             sticky="ew", padx=12, pady=(8, 12))
+        center_on_root(dlg)
 
     def set_train_active(active):
         """Xanh duong khi nghi, xanh la khi Train dang chay."""
@@ -1434,11 +1715,10 @@ def main():
     TRAIN_ACTIVE = [False]
 
     def train_chain():
-        """Chuỗi train theo level: duyet tung dong hop le (co spot + Min/Max).
-        - Lv < Min   : cho (nhan vat train o map cu).
-        - Lv trong [Min, Max] : di toi spot cua dong do, xong cho train toi Max.
-        - Lv > Max   : bo qua dong, sang map ke tiep.
-        PgUp = dung toan bo."""
+        """Duyet LAN LUOT tung cua so game. Moi vong: tham 1 cua so — dam bao
+        nhan vat o dung spot theo Lv cua no, Helper + Giam tai dang BAT — roi
+        RUI cho tu train, sang cua so ke. Lv 400 -> Reset -> spot dong 1.
+        Lv vuot het moi dong -> cua so do 'done'. PgUp = dung tat ca."""
         if TRAIN_ACTIVE[0] or running[0]:
             return
         rows = []
@@ -1463,82 +1743,111 @@ def main():
         TRAIN_ACTIVE[0] = True
         set_train_active(True)
         reset_stop()
-        log_add(f"  === Train chain: {len(rows)} map ===")
+        log_add(f"  === Train chain: {len(rows)} map, duyet tung cua so ===")
         try:
-            # Sau Reset, nhan vat ve Lv 1 -> chay lai tu dau chuoi (while True).
+          try:
             while True:
-                outcome = run_pass(rows)   # "done" | "stopped" | "reset"
-                if outcome != "reset":
+                wins = list(list_game_windows().items())
+                log_add(f"  Vong train: {len(wins)} cua so game")
+                if not wins:
+                    set_status("Khong con cua so game nao.")
                     break
-                log_add("  === Reset xong → Train bắt đầu lại từ dòng 1 ===")
-            if outcome == "stopped":
-                set_status("Train chain: ĐÃ DỪNG (PgUp).")
-                send_ctrl_f_off()   # dung giua chung: tat Giam tai cho chac
-            else:
-                set_status("Train chain: hoàn tất tất cả các map.")
-                log_add("  === Train chain xong ===")
+                pending = []
+                stopped = False
+                for hwnd, pid in wins:
+                    if STOP_REQUESTED[0] or check_stop_key():
+                        log_add("  Dung: STOP_REQUESTED/PgUp duoc phat hien.")
+                        stopped = True
+                        break
+                    set_active(hwnd)
+                    time.sleep(2.0)              # moi cua so cach nhau 2s
+                    outcome = run_visit(rows)
+                    if outcome == "stopped":
+                        stopped = True
+                        break
+                    if outcome == "visit":
+                        pending.append(hwnd)
+                if stopped:
+                    set_status("Train chain: ĐÃ DỪNG (PgUp).")
+                    send_ctrl_f_off()   # dung giua chung: tat Giam tai cho chac
+                    break
+                if not pending:
+                    set_status("Train chain: hoàn tất tất cả các cửa sổ.")
+                    log_add("  === Train chain xong ===")
+                    break
+                set_status(f"Train: {len(pending)} cua so — qua lien tuc, cach nhau 2s")
+          except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            log_add(f"  LOI Train chain: {e}")
+            log_err(f"[train_chain] {tb}")
         finally:
             TRAIN_ACTIVE[0] = False
             set_train_active(False)
             running[0] = False
 
-    def run_pass(rows):
-        """1 luot duyet toan bo dong. Tra 'reset' neu auto-reset xay ra (can chay
-        lai tu dau), 'stopped' neu PgUp, nguoc lai 'done'."""
+    def run_visit(rows):
+        """1 lan tham cua so ACTIVE: dam bao o dung spot theo Lv, Helper +
+        Giam tai BAT. Tra 'done' (Lv vuot het moi dong) / 'visit' / 'stopped'."""
+        hwnd = ACTIVE_HWND[0]
+        nm, lv = read_title(hwnd)
+        if lv is None:
+            log_add("  (chua doc duoc Lv tu title — bo qua lan nay)")
+            return "visit"
+        if lv >= AUTO_RESET_LV:
+            log_add(f"  {nm}: dat Lv {lv} >= {AUTO_RESET_LV} → tat Giam tai, Reset stat")
+            # CHI kiem tra che do don gian KHI THAT SU da thoat Giam tai
+            # (off() tra True). Chua thoat ma kiem tra A/B = vong lap ket:
+            # nut don gian khong hien khi Giam tai con bat.
+            if send_ctrl_f_off(hwnd):
+                ensure_simple_mode(hwnd)
+            else:
+                log_add("  Chua thoat duoc Giam tai → BO QUA kiem tra don gian.")
+            reset_stats()
+            if STOP_REQUESTED[0]:
+                return "stopped"
+            lv = 1
+        # Dong dau tien ma Lv hien tai van con nam trong (lv <= vmax)
+        target = None
         for (tok, x, y, vmin, vmax) in rows:
-            # --- Cho toi Lv Min (hoac bo qua neu da vuot Lv Max) ---
-            skip = False
-            while not STOP_REQUESTED[0] and not check_stop_key():
-                lv = LIVE_LEVEL[0]
-                if lv is None:
-                    set_status("Chưa đọc được level từ title cửa sổ...")
-                    time.sleep(2); continue
-                if lv > vmax:
-                    set_status(f"Lv {lv} > {vmax}: bỏ qua {tok}")
-                    skip = True; break
-                if lv >= vmin:
-                    break
-                set_status(f"Lv {lv} < {vmin}: chờ train trước khi tới {tok}")
-                time.sleep(3)
-            if STOP_REQUESTED[0] or check_stop_key():
-                STOP_REQUESTED[0] = True; return "stopped"
-            if skip:
-                continue
-            # --- Di toi spot cua dong ---
+            if lv <= vmax:
+                target = (tok, x, y, vmin, vmax)
+                break
+        if target is None:
+            log_add(f"  {nm}: Lv {lv} vuot moi dong → hoan tat chuoi")
+            send_ctrl_f_off(hwnd)
+            return "done"
+        tok, x, y, vmin, vmax = target
+        # DOC TOA DO KHONG CAN THAO TAC CHUOT truoc: neu Giam tai dang BAT va
+        # van o dung spot -> THAM LAN nay chi xem Lv, KHONG click gi ca
+        # (tranh moi vong duyet bam (400,300) lien tuc khi khong can).
+        px, py = a_pos()
+        if LT_ON.get(hwnd) and px is not None and at_spot(px, py, x, y):
+            log_add(f"  {nm}: Lv {lv} — o dung spot, Giam tai dang BAT → "
+                    f"bo qua Home/Helper, cho tu train")
+            return "visit"
+        # Offset memory chi refresh khi co thao tac trong client -> click
+        # (400,300) ep cap nhat ROI MOI so sanh vi tri (tranh doc toa do cu
+        # -> tuong "dung spot" -> khong di chuyen lai). Chi click khi THUC SU
+        # can quyet dinh di/cham soc cua so nay.
+        r = find_window_hwnd(hwnd)
+        if r:
+            (nL, nT, nW, nH), _ = r
+            click_at(nL + ANCHOR_X, nT + ANCHOR_Y, right=False, hwnd=hwnd)
+        time.sleep(0.5)
+        px, py = a_pos()
+        if px is None or not at_spot(px, py, x, y):
+            log_add(f"  {nm}: Lv {lv} → di toi {tok} ({x},{y}) [Lv {vmin}-{vmax}]")
             SELECTED_SPOT[0] = (tok, x, y)
-            log_add(f"  Train {tok} ({x},{y}) · Lv {vmin}-{vmax}")
             goto(_from_train=True)
             if STOP_REQUESTED[0]:
                 return "stopped"
-            # --- Den bai: BAT Giam tai (verify icon hien len) ---
-            send_ctrl_f_on()
-            # --- Cho train den khi vuot Lv Max ---
-            while not STOP_REQUESTED[0] and not check_stop_key():
-                lv = LIVE_LEVEL[0]
-                if lv is not None and lv > vmax:
-                    log_add(f"  Đủ Lv {lv} > {vmax} → tat Giam tai, sang map ke tiep")
-                    send_ctrl_f_off()
-                    break
-                # Tu dong Reset stat khi dat Lv 400 -> ve Lv 1, chay lai tu dau.
-                if lv is not None and lv >= AUTO_RESET_LV:
-                    log_add(f"  Đạt Lv {lv} >= {AUTO_RESET_LV} → tat Giam tai → Reset stat")
-                    send_ctrl_f_off()
-                    reset_stats()
-                    if STOP_REQUESTED[0]:
-                        return "stopped"
-                    return "reset"
-                # Kiem tra bi day lech khoi spot (check ±POS_TOL unit) -> di lai.
-                if not at_spot(LIVE_POS[0], LIVE_POS[1], x, y):
-                    log_add(f"  Lệch khỏi spot ({LIVE_POS[0]:.0f},{LIVE_POS[1]:.0f}) "
-                            f"so với ({x},{y}) > {POS_TOL:.0f} → di chuyển lại")
-                    SELECTED_SPOT[0] = (tok, x, y)
-                    goto(_from_train=True)
-                    if STOP_REQUESTED[0]:
-                        return "stopped"
-                time.sleep(5)
-            if STOP_REQUESTED[0] or check_stop_key():
-                STOP_REQUESTED[0] = True; return "stopped"
-        return "done"
+        else:
+            log_add(f"  {nm}: Lv {lv} — dang o dung {tok} ({x},{y})")
+        # Helper + Giam tai phai BAT de nhan vat tu train khi tool sang cua so khac
+        send_home_verified(hwnd)
+        send_ctrl_f_on(hwnd)
+        return "visit"
 
     # Cua so CO DINH -> cot khoa bang pixel o tren (87px deu nhau).
 
@@ -1645,11 +1954,11 @@ def main():
                 bar.set(p, col, t)
     def poll_live():
         try:
-            x, y = rd_pos(pm)
+            x, y = a_pos()
             if x is not None:
                 LIVE_POS[0], LIVE_POS[1] = x, y
-                LIVE_MAP[0] = rd_map(pm)
-                nm, lv = read_title(GHWND)
+                LIVE_MAP[0] = a_map()
+                nm, lv = read_title(ACTIVE_HWND[0])
                 if nm:
                     LIVE_NAME[0] = nm
                 if lv is not None:
@@ -1672,6 +1981,10 @@ def main():
         elif done:
             logbox.itemconfig(idx, fg="green")
         logbox.see(tk.END)
+    # Nap hook cho log_arrive (ham CAP MODULE, khong nhin thay root/_log_add
+    # cua main() → truoc day moi log kiem tra anh bi mat im lang).
+    ROOT[0] = root
+    LOG_HOOK[0] = _log_add
 
     def get_target():
         """Tra ve (mid, tok, tx, ty) tu spot duoc chon, hoac vi tri live hien tai."""
@@ -1830,13 +2143,23 @@ def main():
             user32.keybd_event(0x10, 0, 0x0002, 0)  # Shift up
             time.sleep(0.02)
 
-    def pos_stable(pm, timeout=2.0, tol=0.5):
-        """Doc rd_pos toi khi 2 lan lien tiep gan nhu khong doi (memory da
-        cap nhat sau warp/click). Tra (x, y) gan nhat hoac (None, None)."""
+    def a_pos():
+        """Toa do nhan vat cua cua so dang ACTIVE."""
+        pm = get_pm_for(ACTIVE_HWND[0]) if ACTIVE_HWND[0] else None
+        return rd_pos(pm) if pm else (None, None)
+
+    def a_map():
+        """World ID map cua cua so dang ACTIVE."""
+        pm = get_pm_for(ACTIVE_HWND[0]) if ACTIVE_HWND[0] else None
+        return rd_map(pm) if pm else None
+
+    def pos_stable(timeout=2.0, tol=0.5):
+        """Doc rd_pos cua cua so ACTIVE toi khi 2 lan lien tiep gan nhu khong
+        doi (memory da cap nhat sau warp/click). Tra (x, y) hoac (None, None)."""
         last = None
         t0 = time.time()
         while time.time() - t0 < timeout:
-            x, y = rd_pos(pm)
+            x, y = a_pos()
             if x is not None:
                 if last is not None and math.hypot(x - last[0], y - last[1]) < tol:
                     return x, y
@@ -1854,7 +2177,7 @@ def main():
             set_status(f"Map {m} khong co lenh /move trong danh sach.")
             log_add(f"  (map {m}: khong co token /move)")
             return False
-        bx, by = rd_pos(pm)   # vi tri TRUOC warp de phat hien dich chuyen
+        bx, by = a_pos()   # vi tri TRUOC warp de phat hien dich chuyen
         log_add(f"  Warp: /move {tok}")
         for attempt in range(1, 4):
             set_status(f"Warp toi {tok} (/move) ... lan {attempt}")
@@ -1871,7 +2194,7 @@ def main():
             while time.time() - t0 < 6.0:
                 time.sleep(0.2)
                 try:
-                    mid = rd_map(pm)
+                    mid = a_map()
                 except Exception:
                     mid = None
                 if mid != m:
@@ -1882,8 +2205,8 @@ def main():
                 # (offset chi refresh khi co thao tac), roi doc on dinh.
                 if not clicked:
                     clicked = True
-                    click_at(cx_screen, cy_screen, right=False, hwnd=GHWND)
-                x, y = pos_stable(pm)
+                    click_at(ACX[0], ACY[0], right=False, hwnd=GHWND)
+                x, y = pos_stable()
                 if x is None:
                     continue
                 if bx is None or math.hypot(x - bx, y - by) > 2.0:
@@ -1921,7 +2244,8 @@ def main():
         MOUSE_BLOCK[0] = True   # App toan quyen chuot: chan click vat ly cua user
         try:
             while running[0] and not STOP_REQUESTED[0]:
-                arrived = _goto_once(m, tok, tx, ty, click_interval, mov_ahead)
+                arrived = _goto_once(m, tok, tx, ty, click_interval, mov_ahead,
+                                     _from_train)
                 if arrived or STOP_REQUESTED[0] or not running[0]:
                     return
                 log_add("  Chua toi dich (60s / stuck >5 / 30s) -> /move lai tu dau.")
@@ -1930,15 +2254,23 @@ def main():
             running[0] = False
             MOUSE_BLOCK[0] = False   # tra chuot cho nguoi dung
 
-    def _goto_once(m, tok, tx, ty, click_interval, mov_ahead):
+    def _goto_once(m, tok, tx, ty, click_interval, mov_ahead, from_train=False):
         """1 lan di: warp + A* + di chuyen. Tra True neu DEN NOI, False neu
-        qua 60s / stuck >5 lan / 30s chua toi diem (goto se warp lai)."""
+        qua 60s / stuck >5 lan / 30s chua toi diem (goto se warp lai).
+        from_train=True: KHONG kiem tra Helper khi DEN NOI — run_visit se
+        lam theo thu tu chuan (tat Giam tai -> Home -> bat Giam tai)."""
         # Dam bao game o foreground truoc khi click (gui phim/warp can focus).
         focus_game()
         time.sleep(0.1)
         # TRUOC /move: neu NUT GIAM TAI CON HIEN tren man hinh -> tat truoc
         # (send_ctrl_f_off tu kiem tra: icon mat san thi khong nhan).
-        send_ctrl_f_off()
+        # CHI kiem tra che do don gian khi THAT SU da thoat Giam tai (True);
+        # chua thoat ma kiem tra A/B = vong lap ket (nut don gian khong hien
+        # khi Giam tai con bat).
+        if send_ctrl_f_off():
+            ensure_simple_mode()
+        else:
+            log_add("  Chua thoat duoc Giam tai → BO QUA kiem tra don gian.")
         # Buoc 1: luon warp ve map goc cua spot (/move <tok>), ke ca khi dang
         # o dung map do (de ve toa do goc truoc khi tinh duong). Khong kiem tra
         # cung/khac map.
@@ -1950,8 +2282,8 @@ def main():
         set_status("Click 400,300 de cap nhat toa do...")
         # Click vao tam nhan vat (400,300) de EP game ghi lai toa do memory
         # (offset chi refresh khi co thao tac), roi doc toi khi ONH DINH.
-        click_at(cx_screen, cy_screen, right=False, hwnd=GHWND)
-        x0, y0 = pos_stable(pm)
+        click_at(ACX[0], ACY[0], right=False, hwnd=GHWND)
+        x0, y0 = pos_stable()
         if x0 is None:
             set_status("Mat ket noi game. Admin + game mo."); return True
         log_add(f"  Vi tri sau warp/click: ({x0:.0f},{y0:.0f})")
@@ -1990,30 +2322,6 @@ def main():
         wps = [mu_path.tile_to_coord(*p) for p in path]
         n_wp = len(wps)
 
-        # --- Hien thi tung diem len log (toi da 10 dong) ---
-        # Diem moi xuat hien mau DEN; khi den thi TO XANH; diem cuoi TO DO.
-        wp_lines = {}   # wp_index -> line_index trong logbox
-        def reveal_wp(i, color):
-            def _do():
-                # Khong gioi han so dong (co scrollbar). Moi diem 1 dong duy nhat.
-                if i in wp_lines and 0 <= wp_lines[i] < logbox.size():
-                    return  # diem da hien thi roi (tranh trung lap sau khi ve lai duong)
-                idx = logbox.size()
-                tag = " (DICH CUOI)" if i == n_wp - 1 else ""
-                logbox.insert(tk.END, f"  Diem {i+1}/{n_wp}: ({wps[i][0]:.0f},{wps[i][1]:.0f}){tag}")
-                if color:
-                    logbox.itemconfig(idx, fg=color)
-                wp_lines[i] = idx
-                logbox.see(tk.END)
-            root.after(0, _do)
-        def mark_done(i):
-            def _do():
-                if i in wp_lines and 0 <= wp_lines[i] < logbox.size():
-                    logbox.itemconfig(wp_lines[i], fg="green")
-            root.after(0, _do)
-
-        # Bat dau: hien diem dau tien (mau den)
-        reveal_wp(0, None)
         wp_idx = [0]
 
         # --- Tham so thuat toan ---
@@ -2039,8 +2347,8 @@ def main():
         step_no = [0]
         last_rect_t = -10.0
         # Bien local, cap nhat moi khi user di chuyen/resize cua so game.
-        _L, _T, _W, _H = L, T, W, H
-        _cx, _cy = cx_screen, cy_screen
+        _L, _T, _W, _H = ARECT[0]
+        _cx, _cy = ACX[0], ACY[0]
 
         def right_hold_1s():
             """Giu nut chuot PHAI 1s tai tam nhan vat (lenh 'dung tan cong'
@@ -2072,7 +2380,6 @@ def main():
                 wps[:] = [mu_path.tile_to_coord(*p) for p in new_path]
                 n_wp = len(wps); wp_idx[0] = 0
                 wp_deadline[0] = time.time()   # duong moi -> reset dong ho 30s
-                logbox.delete(0, tk.END); wp_lines.clear(); reveal_wp(0, None)
                 log_add(f"  Duong moi: {n_wp} diem")
                 return True
             log_add("  Khong tim duoc duong moi; tiep tuc di theo duong cu.")
@@ -2084,7 +2391,7 @@ def main():
                 if check_stop_key():
                     STOP_REQUESTED[0] = True
                     break
-                x, y = rd_pos(pm)
+                x, y = a_pos()
                 if x is None:
                     set_status("Mat ket noi game."); break
                 root.after(0, lambda v=(x, y): set_pos_text(v[0], v[1]))
@@ -2096,7 +2403,7 @@ def main():
                 # Refresh rect cua so game moi 0.4s (neu user di chuyen/resize).
                 if now - last_rect_t > 0.4:
                     last_rect_t = now
-                    rect2 = find_window_hwnd()
+                    rect2 = find_window_hwnd(ACTIVE_HWND[0])
                     if rect2:
                         (nL, nT, nW, nH), _ = rect2
                         if (nL, nT, nW, nH) != (_L, _T, _W, _H):
@@ -2138,13 +2445,8 @@ def main():
                 advanced = False
                 while (wp_idx[0] < len(wps) - 1 and
                        math.hypot(wps[wp_idx[0]][0] - x, wps[wp_idx[0]][1] - y) < REACH_WP):
-                    reached = wp_idx[0]
                     wp_idx[0] += 1
                     advanced = True
-                    # To xanh diem vua den, roi hien diem ke tiep (den / do neu la diem cuoi)
-                    mark_done(reached)
-                    nxt = wp_idx[0]
-                    reveal_wp(nxt, "red" if nxt == n_wp - 1 else None)
                 if advanced:
                     wp_deadline[0] = now   # reset dong ho 30s cho waypoint moi
 
@@ -2159,25 +2461,19 @@ def main():
                 tx_seg, ty_seg = wps[wp_idx[0]]
                 dist_goal = math.hypot(tx - x, ty - y)
                 if dist_goal < ARRIVE:
-                    # Diem cuoi phai la mau DO (reveal neu chua, hoac to do neu da co)
-                    if n_wp - 1 not in wp_lines:
-                        reveal_wp(n_wp - 1, "red")
-                    else:
-                        li = wp_lines[n_wp - 1]
-
-                        def _red(li=li):
-                            if 0 <= li < logbox.size():
-                                logbox.itemconfig(li, fg="red")
-                        root.after(0, _red)
                     log_add(f"  DEN NOI ({x:.1f},{y:.1f})", done=True)
                     set_status(f"DEN NOI ({x:.1f},{y:.1f})")
-                    # Toi dung toa do: Home 1 lan (kiem tra icon Helper).
-                    # Giam tai do Train chain bat/tat co kiem tra icon.
-                    try:
-                        send_home_verified()
-                        log_add("  Den noi: da gui Home (da kiem tra icon)")
-                    except Exception as e:
-                        log_add(f"  Loi gui phim: {e}")
+                    # Toi dung toa do: Home 1 lan (kiem tra icon Helper) —
+                    # CH khi di THU CONG. Tu Train chain (from_train): bo qua
+                    # o day, de run_visit thu Home theo dung thu tu
+                    # (tat Giam tai -> Home -> bat Giam tai), tranh Home bi
+                    # kiem tra 2 lan lien tiep.
+                    if not from_train:
+                        try:
+                            send_home_verified()
+                            log_add("  Den noi: da gui Home (da kiem tra icon)")
+                        except Exception as e:
+                            log_add(f"  Loi gui phim: {e}")
                     break
                 # den waypoint cuoi -> dich chinh la tx,ty
                 if wp_idx[0] >= len(wps) - 1:
@@ -2236,10 +2532,7 @@ def main():
             set_status("Chon 1 train spot hoac dam bao nhan vat dang o map."); return
         running[0] = True
         set_status("Tinh toan duong di (dry-run)...")
-        try:
-            x0, y0 = rd_pos(pm)
-        except Exception:
-            x0, y0 = None, None
+        x0, y0 = a_pos()
         if x0 is None:
             # Khong doc duoc vi tri that -> gio lap tam de van xem duoc duong di
             x0, y0 = mu_path.tile_to_coord(*mu_path.coord_to_tile(tx, ty))

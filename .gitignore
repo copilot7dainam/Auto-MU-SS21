@@ -19,5 +19,10 @@ gfxdec_src/_gen_ciphers.js
 node_modules/
 gfxdec_src/dist/
 
+# PyInstaller build artifacts (exe attach vao Release, khong commit)
+build/
+dist/
+*.spec
+
 # Cai dat ca nhan cua tool (khong push)
 mu_goto_cfg.json

@@ -14,8 +14,16 @@ Chay rieng de test: python mu_path.py <map_num> <sx> <sy> <tx> <ty>
 import os, sys, json, subprocess, math
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ATT = os.path.join(HERE, "att_samples")
-GFX = os.path.join(HERE, "gfxdec_src")
+# exe PyInstaller: __file__ nam trong _MEIxxx (tam) -> uu tien thu muc .exe
+# de tim att_samples/gfxdec_src canh exe; khong co thi quay lai HERE.
+_APP = (os.path.dirname(os.path.abspath(sys.argv[0]))
+        if getattr(sys, "frozen", False) else HERE)
+ATT = os.path.join(_APP, "att_samples")
+if not os.path.isdir(ATT):
+    ATT = os.path.join(HERE, "att_samples")
+GFX = os.path.join(_APP, "gfxdec_src")
+if not os.path.isdir(GFX):
+    GFX = os.path.join(HERE, "gfxdec_src")
 CACHE = os.path.join(ATT, "_grid_cache")
 INDEX = os.path.join(ATT, "map_index.json")
 N = 256

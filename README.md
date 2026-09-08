@@ -2,8 +2,9 @@
 
 Bộ công cụ tự động hóa nhân vật **MU Online Season 21** (đã test với client
 **epicmu.net / EpicMU Part2 IGCN**): auto-move tới tọa độ bất kỳ bằng click giả
-lập + A*, chuỗi Train tự động theo level, tự Reset stat, và giải mã bản đồ
-`.att` làm lưới walkable 256×256.
+lập + A*, chuỗi Train **đa cửa sổ** tự động theo level từng nhân vật, tự Reset
+stat, nhận diện trạng thái game **bằng hình ảnh**, và giải mã bản đồ `.att` làm
+lưới walkable 256×256.
 
 > ⚠️ **Cảnh báo**: đọc memory và điều khiển click client game có thể vi phạm điều
 > khoản dịch vụ của server. Tự chịu trách nhiệm khi sử dụng. Chạy quyền
@@ -13,136 +14,153 @@ lập + A*, chuỗi Train tự động theo level, tự Reset stat, và giải m
 
 ## 1. Cài đặt & chạy
 
-```bash
-pip install pymem customtkinter numpy pillow opencv-python
-python mu_goto.py
-```
+### Cách 1 — file exe (khuyên dùng, không cần cài Python)
 
-Hoặc tạo shortcut Desktop tới `pythonw.exe mu_goto.py` (đã có sẵn trong repo
-này: `MU GOTO.lnk`). Game phải mở ở chế độ cửa sổ (windowed), chạy quyền Admin.
-
-File dữ liệu đi kèm (tự tạo/tự nhớ, không cần chỉnh tay):
+Tải **`MU-Goto.exe`** ở mục Releases. Bỏ vào **1 thư mục cùng các file**:
 
 | File | Nội dung |
 |------|----------|
+| `mu_path.py` | (chỉ bản Python; exe đã nhúng sẵn) |
 | `mu_goto_calib.json` | Ma trận isometric world↔pixel (do `mu_calib.py` đo) |
-| `mu_goto_spots.json` | Các tọa độ train đã lưu theo từng map |
-| `mu_goto_cfg.json` | 5 dòng Train + điểm cộng Reset (cài đặt UI, chỉ máy bạn) |
-| `mu_goto_helper.png` | Template ảnh nút Helper (chụp bằng nút 📷) |
-| `mu_goto_lt.png` | Template ảnh nút Giảm tải |
-| `mu_goto_chat.png` | Template ảnh ô chat |
+| `att_samples/_grid_cache/` | Thư mục cache lưới walkable các map |
+
+Chạy **right-click → Run as administrator**. Tool tự tạo
+`mu_goto_cfg.json` / `mu_goto_spots.json` / `mu_goto_simple_A.png`… **ngay cạnh
+file exe**. Mở được UI kể cả khi chưa bật game.
+
+### Cách 2 — chạy từ source
+
+```bash
+pip install pymem customtkinter numpy pillow opencv-python pyinstaller
+python mu_goto.py
+```
+
+Build exe từ source:
+
+```bash
+pyinstaller --onefile --windowed --name MU-Goto --collect-all customtkinter ^
+  --hidden-import pymem --hidden-import cv2 --hidden-import numpy --hidden-import PIL mu_goto.py
+```
 
 ---
 
 ## 2. Giao diện MU GOTO
 
-Cửa sổ **cố định 460×430**, phong cách macOS, 2 tab chuyển bằng nút đầu window:
+Cửa sổ **cố định 460×430**, phong cách macOS. Hàng đầu: nút **▶ Train** (bằng
+chiều cao header tab) + 3 tab **Điều khiển / Cấu hình / Log**.
 
 ### Tab "Điều khiển"
 - **▶ Train** — bật/tắt chuỗi train tự động (nhấn lần 1 chạy, nhấn lần 2 dừng).
-  Nút xanh dương khi nghỉ → **xanh lá** khi đang chạy.
+  Xanh dương khi nghỉ → **xanh lá** khi đang chạy.
 - **↺ Reset** — hẹn lịch reset stat: chỉ chạy khi nhân vật đạt **Lv 400**.
   Nút **đỏ** khi đang chờ/đang chạy; nhấn lần 2 để hủy.
   **Chuột phải** vào nút → bảng nhập 5 điểm cộng (str/agi/vit/ene/cmd).
-- **📷 Chụp ảnh** — chọn 1 trong 3 icon (Helper / Giảm tải / Ô chat) → phủ màn
-  hình trong suốt → kéo chuột khoanh vùng icon trên game → lưu template để tool
-  nhận diện bằng hình ảnh. Làm 1 lần, dùng mãi mãi.
-- **Thanh tiến trình** — mỗi cửa sổ game đang mở là **1 bar** (hình dạng như nút
-  Train, bo góc): nền xám, fill **xanh lá** theo level (Lv 1 = 0%, Lv 400 =
-  100%), **chuyển đỏ khi đủ Lv 400**. Bên trong bar hiển thị
-  `Tên · Lv — Map (x, y)` của nhân vật tương ứng. Tool tự phát hiện cửa sổ
-  mới mở / đã đóng để thêm / xóa bar.
+- **📷 Chụp ảnh** — modal giữa cửa sổ, xem trước ảnh đã chụp:
+  - **Helper** — icon khi Helper đang bật.
+  - **Giảm tải** — icon/nút khi Giảm tải đang bật.
+  - **Chế độ đơn giản — ảnh A** — ảnh chỉ báo chế độ đơn giản ĐÃ BẬT.
+  - **Điểm B** — phủ màn hình trong suốt, **bấm 1 điểm** đúng nút bật đơn giản
+    trong game → tool lưu tọa độ (tương đối client) vào config.
+- **Thanh tiến trình** — mỗi cửa sổ game là **1 bar** bo tròn (mỏng hơn khi >5
+  cửa sổ): fill **xanh lá** theo level, **đỏ khi đủ Lv 400**; tên / Lv / tọa độ
+  nằm **bên trong** bar. Tự thêm/xóa bar khi mở/đóng game.
 
 ### Tab "Cấu hình"
-- **Lưới 5 dòng train**, mỗi dòng 4 ô bằng nhau (87px, cách nhau 10px):
-  `Map` (dropdown lệnh /move, kèm số tọa độ đã lưu màu đỏ) · `Spot` (dropdown
-  tọa độ đã lưu) · `Min` · `Max` (level tối thiểu/tối đa của bãi) · nút `+`
-  lưu tọa độ hiện tại vào map đang chọn.
-- **Log đường đi**: liệt kê từng điểm A* (đen = chưa tới, xanh = đã tới, đỏ =
-  đích cuối). Không thanh cuộn — lăn chuột để kéo.
+Lưới 5 dòng train, mỗi dòng 4 cột đều 87px cách nhau 10px:
+`Map` (dropdown /move) · `Spot` · `Min` · `Max` + nút `+` lưu tọa độ hiện tại.
 
-Toàn bộ lựa chọn (map/spot/min/max, điểm reset) được **tự lưu** và khôi phục
-lần sau mở tool.
+### Tab "Log"
+Log chạy **trong ứng dụng** (không xuất file): kéo con lăn chuột để xem log cũ.
+Đường đi **không** in từng điểm — chỉ báo **DEN NOI** khi tới nơi.
+
+Toàn bộ lựa chọn tự lưu và khôi phục lần sau mở tool.
 
 ---
 
-## 3. Chuỗi Train tự động (kịch bản đầy đủ)
+## 3. Train đa cửa sổ (kịch bản đầy đủ)
+
+Tool **quét liên tục** các cửa sổ game, **mỗi cửa sổ cách nhau 2s**; mỗi nhân
+vật chạy chuỗi riêng theo **Lv của chính nó**:
 
 ```
-Tới bãi train → Home (bật Helper, verify bằng icon) → Bật Giảm tải (verify icon)
-→ Đủ Lv Max của dòng → Tắt Giảm tải (verify icon mất) → Sang bãi kế tiếp
-→ ... → Đủ Lv 400 → Tắt Giảm tải → Reset stat → Về Lv 1 → chạy lại từ dòng 1
+Đủ Lv Max dòng → Tắt Giảm tải (verify icon MẤT, tối đa 10 lần bấm)
+→ Kiểm tra Chế độ đơn giản (chỉ SAU khi đã thoát Giảm tải)
+→ /move + đi tới bãi mới → Home bật Helper (verify icon) → Bật Giảm tải (verify icon)
+→ quay lại quét cửa sổ khác...
+→ Đủ Lv 400 → Tắt Giảm tải → đơn giản → Reset stat → về Lv 1 → chạy lại dòng 1
 ```
 
-- Duyệt lần lượt 5 dòng: `Lv < Min` → chờ; `Min ≤ Lv ≤ Max` → di chuyển tới
-  spot và train; `Lv > Max` → bỏ qua dòng.
-- Đang train mà bị đẩy lệch khỏi spot quá **5 unit** → tự đi quay lại.
-- Space (thực ra là **PgUp**) = dừng mọi thứ ngay lập tức.
+- **Không thao tác chuột thừa**: ghé cửa sổ mà nhân vật đang đứng đúng bãi +
+  Giảm tải đang bật → chỉ đọc Lv rồi đi, **không click gì**.
+- Ctrl+F và Home đều là **toggle** → tool **kiểm tra trạng thái bằng hình ảnh
+  TRƯỚC khi bấm**, bấm tối đa 1 lần mỗi lượt kiểm tra, nghỉ tối đa 10 lần →
+  không bao giờ bật/tắt nhầm.
+- **PgUp** = dừng mọi thứ ngay lập tức.
 
-## 4. Cơ chế di chuyển
+## 4. Ba lớp kiểm tra trạng thái
 
-1. Gửi `/move <map>` → **chờ 3s** → click điểm cố định **(400,300)** trong
-   client để ép game cập nhật tọa độ memory → đọc tới khi **ổn định**.
-2. Xác nhận warp thành công bằng **cả map đúng lẫn vị trí thay đổi** (chống đọc
-   tọa độ cũ → báo "đến nơi" giả).
-3. A* trên lưới walkable → đi từng waypoint. **Mỗi click chỉ cách tâm nhân vật
-   tối đa 5 unit** (chống click văng nhầm đường).
-4. **Stuck (tọa độ đứng yên)**: 3s → giữ chuột phải 1s → 6s → giữ phải lần 2 →
-   9s → tính lại đường từ vị trí hiện tại. Tổng stuck >5 lần → nghỉ 3s →
+| Lớp | Cách hoạt động |
+|-----|----------------|
+| **Helper** | Tới đích → chờ 1s → nhấn Home → 1s → tìm icon Helper → chưa thấy → nhấn lại → lặp (PgUp thoát) |
+| **Giảm tải** | ON: không thấy icon → Ctrl+F → 1s → thấy → dừng. OFF: thấy icon → Ctrl+F → 1s → mất → dừng. Tối đa 10 lần |
+| **Chế độ đơn giản** (tùy chọn) | Không thấy **ảnh A** → **click điểm B** đã cấu hình → 1s → kiểm tra lại → lặp. Chạy ngay sau khi thoát Giảm tải thành công |
+
+- Phạm vi quét ảnh: **chỉ vùng client của cửa sổ game đang thao tác** (không
+  phải toàn màn hình), ngưỡng khớp 0.90 (chống khớp nhầm nút Pause cùng màu).
+- Lệnh chat (/move, /reset, /add…): **copy clipboard + Ctrl+V** (nhanh & chính
+  xác hơn gõ từng ký tự), Enter mở chat → dán → Enter.
+- Phím gửi bằng `keybd_event` **scan code thật** + xác minh đúng foreground
+  window — cách duy nhất hoạt động với client MU này.
+
+## 5. Cơ chế di chuyển
+
+1. Gửi `/move <map>` → **chờ 3s** → click điểm cố định **(400,300)** ép game
+   cập nhật tọa độ memory → đọc tới khi **ổn định**.
+2. Xác nhận warp bằng **cả map đúng lẫn vị trí thay đổi** (chống "đến nơi" giả).
+3. A* trên lưới walkable. **Mỗi click chỉ cách tâm nhân vật tối đa 5 unit**.
+4. **Stuck**: 3s → giữ chuột phải 1s → 6s → giữ phải lần 2 → 9s → tính lại
+   đường. Tổng stuck >5 lần / 30s chưa tới điểm / 60s chưa tới đích → nghỉ 3s →
    `/move` lại từ đầu.
-5. **30s chưa tới điểm kế tiếp** hoặc **60s chưa tới đích** → nghỉ 3s →
-   `/move` lại từ đầu.
-6. Trước khi `/move`: nếu còn thấy **nút Giảm tải** trên màn hình → tắt nó
-   trước (Ctrl+F verify icon biến mất).
-7. Trước khi gõ **mọi lệnh chat** (/move, /reset, /add...): Enter mở ô chat →
-   **phải thấy template ô chat** mới được gõ; không thấy → Esc → Enter → kiểm
-   tra lại (tối đa 5 vòng).
-8. **Home**: chỉ nhấn **1 lần khi tới đúng tọa độ đích** (±1.5 unit).
+5. Trước `/move`: nếu còn thấy nút Giảm tải → tắt trước.
 
-## 5. Reset stat
+## 6. Reset stat
 
-- Bấm nút Reset = **hẹn giờ**: chờ tới Lv 400 mới chạy (không chạy ngay).
-- Đạt Lv 400 trong lúc Train = **tự động** chạy chuỗi, xong Train quay lại
-  dòng 1 (nhân vật về Lv 1).
-- Chuỗi lệnh: `/reset` (chờ 5s) → `/addstr|agi|vit|ene|cmd <điểm>` theo cấu
-  hình (chuột phải nút Reset để sửa, mặc định 500) → 5 lệnh
-  `/add... auto 32000`, mỗi lệnh cách 1s.
+- Bấm nút Reset = **hẹn giờ**: chỉ chạy khi Lv 400 (nhấn lần 2 để hủy).
+- Đạt Lv 400 trong lúc Train = **tự động** chạy chuỗi, xong quay lại dòng 1.
+- Chuỗi: `/reset` (chờ 5s) → `/addagi auto 32000` **trước**, rồi
+  `/addstr|ene|vit|cmd auto 32000` → các lệnh `/add... <điểm>` theo cấu hình.
 
-## 6. Quyền chuột & an toàn
+## 7. Quyền chuột & an toàn
 
-- Khi tool đang chiếm chuột (di chuyển), **mọi thao tác chuột vật lý của người
-  dùng bị chặn** bằng low-level hook (click do tool phát vẫn hoạt động) — tránh
-  bấm nhầm làm lệch đường. Thả chuột ngay khi dừng.
+- Khi tool chiếm chuột (di chuyển), **mọi click vật lý của người dùng bị chặn**
+  bằng low-level hook (click do tool phát vẫn hoạt động). Thả ngay khi dừng.
 - Bàn phím không bị chặn → **PgUp** luôn dừng được tool giữa chừng.
-- Cơ chế click: `SetCursorPos + mouse_event` (input toàn cục — cách duy nhất
-  hoạt động với client MU này; SendInput/PostMessage đã thử và bị lỗi).
+- Click: `SetCursorPos + mouse_event` (input toàn cục — SendInput/PostMessage
+  đã thử và không hoạt động với client này).
 
 ---
 
-## 7. Test toàn bộ map (`mu_goto_test.py`)
+## 8. Test toàn bộ map (`mu_goto_test.py`)
 
 Mô phỏng pathfinding trên mọi map có sẵn, **100 lần/map**: chọn ngẫu nhiên tọa
-độ hiện tại & đích (0–255), tính đường A* y hệt `mu_goto.py` (snap
-`nearest_walkable` + safe-margin, thử lại grid gốc nếu bị kẹt). Cửa sổ hiển
-thị: map hiện tại, lần thử, % tiến trình, số lần thành/thất bại, log từng map,
-nút Dừng. Tổng cộng 85 × 100 = 8500 lần test.
+độ hiện tại & đích (0–255), tính đường A* y hệt `mu_goto.py`. Tổng cộng
+85 × 100 = 8500 lần test.
 
-## 8. Dữ liệu bản đồ (grid)
+## 9. Dữ liệu bản đồ (grid)
 
 `mu_path.load_grid(map_num)` đọc grid walkable từ
 `att_samples/_grid_cache/World<map>.json`. Chưa có cache → lần đầu gọi
 `node gfxdec_src/att_dec.js` giải mã `EncTerrain<map>.att`.
 
 **Trạng thái (2026-09):** đã có grid **85 map** (1–147 trừ các map thiếu dữ
-liệu); **62 map chưa giải được** do `att_dec.js` lỗi `algo2 unsupported 6`
-với cipher-6.
+liệu); **62 map chưa giải được** do `att_dec.js` lỗi `algo2 unsupported 6`.
 
-## 9. Kiến trúc tóm tắt
+## 10. Kiến trúc tóm tắt
 
 | Tầng | File chính |
 |------|-----------|
-| Giao diện / điều khiển | `mu_goto.py` (toàn bộ UI + train chain + verify ảnh) |
-| Core pathfinding | `mu_path.py` (A*, `load_grid`, `make_safe`, `replan`, `nearest_walkable`) |
+| Giao diện / điều khiển | `mu_goto.py` (UI + train chain đa cửa sổ + verify ảnh) |
+| Core pathfinding | `mu_path.py` (A*, `load_grid`, `make_safe`, `nearest_walkable`) |
 | Giải mã & gallery | `gfxdec_src/att_dec.js`, `mu_att_html.py`, `mu_epic_gallery.py` |
 | Công cụ memory | `mu_find.py`, `mu_reader.py`, `mu_scanner.py`, `mu_ptrscan.py` |
 | Dữ liệu | `att_samples/_grid_cache/World*.json`, `mu_goto_calib.json` |
