@@ -906,7 +906,10 @@ def icon_present(img_path, thresh=0.90, hwnd=None):
 # ANH (tra toa do TUONG DOI trong cua so), window theo title regex, minimize.
 LI_TPL_DIR = os.path.join(APP_DIR, "li_templates")
 LI_COORDS_FILE = os.path.join(APP_DIR, "mu_goto_li.json")
-LI_IMG_TIMEOUT = 300.0        # 5 phut moi buoc anh
+LI_IMG_TIMEOUT = 90.0         # max moi buoc anh (truoc day 300 → 1 buoc ket
+                              # hang van cho 5' trong khi ca luong chi co 5')
+LI_TOTAL_TIMEOUT = 300.0      # 5 phut TOAN LUONG login 1 account; het gio →
+                              # dong cua so game, lam lai tu dau (li_run_all)
 LI_STEP_PAUSE = 3.0
 
 
@@ -916,7 +919,9 @@ def li_tpl(key):
 
 def li_find_button(img_path, hwnd):
     """Tim template tren anh client cua hwnd. Tra (x, y, score) TUONG DOI
-    trong cua so, hoac None. (Anh chup RGB -> chuyen BGR nhu icon_present.)"""
+    trong WINDOW RECT (khop khong gian li_click_rel — ANH CHUP la client
+    region, thieu title bar nen phai tru/cong offset client→window, neu
+    khong moi click lech ~30px xuong duoi). None neu khong thay."""
     try:
         import cv2, numpy as np
         tpl = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
@@ -934,7 +939,16 @@ def li_find_button(img_path, hwnd):
         if score < 0.90:
             return None
         th, tw = tpl.shape[:2]
-        return (top_left[0] + tw // 2, top_left[1] + th // 2, score)
+        cx = top_left[0] + tw // 2          # toa do TRONG ANH CLIENT
+        cy = top_left[1] + th // 2
+        r = wt.RECT()                        # quy ve window-relative
+        user32.GetWindowRect(hwnd, ctypes.byref(r))
+        r2 = find_window_hwnd(hwnd)
+        if r2:
+            (cl, ct, _cw, _ch), _h2 = r2
+            cx += cl - r.left
+            cy += ct - r.top
+        return (cx, cy, score)
     except Exception:
         return None
 
@@ -944,17 +958,20 @@ def _li_title_regex(pattern):
 
 
 def li_find_windows(pattern):
-    """[hwnd] co title khop regex (bo cua so an/off-screen)."""
+    """[hwnd] co title khop regex. minimize (IsIconic) VAN duoc tra ve —
+    launcher LI bi chinh tool minimize sau khi Play; loai no di se dan toi
+    khoi dong exe lan 2, chong launcher. Off-screen thuong thi van bo qua."""
     rx = _li_title_regex(pattern)
     out = []
     @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
     def cb(hwnd, _):
         if not user32.IsWindowVisible(hwnd):
             return True
-        r = wt.RECT()
-        user32.GetWindowRect(hwnd, ctypes.byref(r))
-        if r.left <= -10000 or (r.right - r.left) < 40:
-            return True          # off-screen/minimize tray -> bo qua
+        if not user32.IsIconic(hwnd):
+            r = wt.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(r))
+            if r.left <= -10000 or (r.right - r.left) < 40:
+                return True      # off-screen -> bo qua
         n = user32.GetWindowTextLengthW(hwnd)
         if n:
             buf = ctypes.create_unicode_buffer(n + 1)
@@ -980,13 +997,55 @@ def li_pick_window(hits):
 
 
 def li_restore_launcher(hwnd):
-    """Khui cua so launcher ke ca khi minimize (SW_MINIMIZE -> restore)."""
+    """Khui cua so launcher: MINIMIZE -> RESTORE -> MAXIMIZE -> foreground.
+    (Chi ShowWindow(9) doi khi khong du — MU launcher o che do minimize/maximize
+    cua Windows, phai ep 3 lan moi chac len toi dinh.)"""
     try:
-        SW_MINIMIZE_, SW_RESTORE_ = 6, 9
-        user32.ShowWindow(hwnd, SW_RESTORE_)
-        time.sleep(0.4)
+        SW_MINIMIZE_, SW_RESTORE_, SW_MAXIMIZE_ = 6, 9, 3
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, SW_RESTORE_)
+            time.sleep(0.3)
+        user32.ShowWindow(hwnd, SW_MAXIMIZE_)
+        time.sleep(0.3)
+        _ensure_foreground(hwnd)
     except Exception:
         pass
+
+
+def li_launcher_windows(cfg):
+    """Cua so launcher: tim theo TITLE regex; NEU KHONG thay → tim theo PID cua
+    process launcher (chac — nhieu variant launcher co title khong khop
+    'MU.*Launcher', cu tim theo title → khong thấy → mo exe lan 2, MU chan).
+    Chi tra launcher cua process dang chay; rong = chua co, duoc phep mo moi."""
+    hits = li_find_windows(cfg.get("launcher_title", "MU.*Launcher"))
+    if hits:
+        return hits
+    exe = cfg.get("launcher_path", "") or ""
+    pname = os.path.splitext(os.path.basename(exe))[0].lower()
+    if not pname:
+        return []
+    pids = set()
+    for p in pymem.process.list_processes():
+        try:
+            nm = p.szExeFile.decode("utf-8", "ignore").lower()
+        except Exception:
+            continue
+        if nm.split(".")[0] == pname:
+            pids.add(p.th32ProcessID)
+    if not pids:
+        return []
+    out = []
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def cb(hwnd, _):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids and _rect_area(hwnd) >= 40 * 40:
+            out.append(hwnd)
+        return True
+    user32.EnumWindows(cb, 0)
+    return out
 
 
 def li_minimize(hwnd):
@@ -1019,10 +1078,33 @@ def li_grab_hwnd(hwnd):
 
 
 def li_click_rel(hwnd, x, y):
-    """Bam toa do TUONG DOI trong cua so hwnd (quy doi sang man hinh)."""
+    """Bam toa do TUONG DOI trong cua so hwnd (quy doi sang man hinh).
+    GUAN TRONGLIEN: (1) active cua so truoc khi bam; (2) poll toi ~8s cho
+    den khi cua so THAT SU nam duoi con tro — giua man hinh login/game load
+    <1s khong kip, click roi vao void = 'bam khong duoc' (P2/P4)."""
+    _ensure_foreground(hwnd)
     r = wt.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(r))
-    click_at(r.left + int(x), r.top + int(y), right=False, hwnd=hwnd)
+    sx, sy = r.left + int(x), r.top + int(y)
+    end = time.time() + 8.0
+    ok = False
+    while time.time() < end:
+        user32.SetCursorPos(sx, sy)
+        time.sleep(0.05)
+        if _window_at(sx, sy) == hwnd and \
+                user32.GetForegroundWindow() in (hwnd, user32.GetAncestor(hwnd, 2)):
+            ok = True
+            break
+        _ensure_foreground(hwnd)
+        user32.GetWindowRect(hwnd, ctypes.byref(r))   # rect co the doi (restore)
+        sx, sy = r.left + int(x), r.top + int(y)
+        time.sleep(0.3)
+    if not ok:
+        log_arrive(f"  [LI] click ({x},{y}): cua so khong nam duoi tro sau 8s — van bam")
+    down = 0x0002
+    user32.mouse_event(down, 0, 0, 0, 0)
+    time.sleep(0.05)
+    user32.mouse_event(0x0004, 0, 0, 0, 0)
 
 
 def li_wait_img_click(hwnd, key, timeout=LI_IMG_TIMEOUT):
@@ -1505,39 +1587,68 @@ def li_parse_pt(v):
         return None
 
 
-def li_run_account(acc, cfg, log):
+def li_close_hwnd(hwnd):
+    """Gui WM_CLOSE de dong cua so (luong login hong → don deo, lan sau mo moi)."""
+    if not hwnd:
+        return
+    try:
+        if user32.IsWindow(hwnd):
+            user32.PostMessageW(hwnd, 0x0010, 0, 0)   # WM_CLOSE
+    except Exception:
+        pass
+
+
+def li_run_account(acc, cfg, log, deadline=None):
     """1 luong dang nhap cho 1 account. cfg: keys launcher_path, launcher_title,
     game_title, coords{login,s0..s4,post1..4}. Tra (True, hwnd) neu thanh cong
-    (kem cua so game MOI) hoac (False, None)."""
+    (kem cua so game MOI) hoac (False, None). deadline = epoch TOAN LUONG
+    (mac dinh 5 phut): het gio → dong cua so game, tra that bai de li_run_all
+    lam lai TU DAU. Moi thao tac chuat/phim deu active cua so truoc (guard
+    trong li_click_rel / _ensure_foreground)."""
     coords = cfg.get("coords", {}) or {}
     ltitle = cfg.get("launcher_title", "MU.*Launcher")
     gtitle = cfg.get("game_title", "Season21")
-    conf = float(cfg.get("confidence", 0.9))
     login_pt = li_parse_pt(coords.get("login"))
     srv_pt = li_parse_pt(coords.get(f"s{int(acc['server_index'])}"))
     if login_pt is None or srv_pt is None:
         log(f"[loi] {acc['user']}: thieu toa do Dang nhap/Server")
         return (False, None)
+    if deadline is None:
+        deadline = time.time() + LI_TOTAL_TIMEOUT
 
     def stopped():
         return STOP_REQUESTED[0] or check_stop_key()
 
-    # B1 launcher: dung cai dang mo (ke ca minimize), khong mo lan 2
-    h = li_pick_window(li_find_windows(ltitle))
+    def late(g=None):
+        """Het gio toan luong → dong cua so game, that bai (run_all lam lai)."""
+        if time.time() >= deadline or stopped():
+            if g:
+                li_close_hwnd(g)
+                log(f"  [LI] {acc['user']}: qua gio/PgUp → dong cua so game, lam lai tu dau")
+            return True
+        return False
+
+    def rem():
+        return max(5.0, deadline - time.time())
+
+    # B1 launcher: TON TAI SAN (title HOAC process dang chay, ke ca minimize)
+    # → maximize + active cua CU, KHONG mo exe lan 2 (MU chan launcher thu 2).
+    h = li_pick_window(li_launcher_windows(cfg))
     if h:
         li_restore_launcher(h)
     else:
         exe = cfg.get("launcher_path", "")
         if not exe or not os.path.isfile(exe):
             log("[loi] launcher_path khong ton tai (cau hinh LI)"); return (False, None)
+        log("[LI] khong thay launcher → mo exe moi")
         try:
             import subprocess
             subprocess.Popen([exe], cwd=os.path.dirname(exe))
         except Exception:
             log("[loi] khong mo duoc launcher"); return (False, None)
-        end = time.time() + 60
+        end = min(time.time() + 60, deadline)
         while time.time() < end and not h:
-            h = li_pick_window(li_find_windows(ltitle))
+            h = li_pick_window(li_launcher_windows(cfg))
             if not h:
                 time.sleep(0.5)
         if not h:
@@ -1545,14 +1656,15 @@ def li_run_account(acc, cfg, log):
 
     # B2 Play now (anh) -> bam -> minimize launcher
     before = set(li_game_windows(gtitle))
-    if stopped() or not li_wait_img_click(h, "play"):
+    if stopped() or not li_wait_img_click(h, "play", timeout=rem()):
         return (False, None)
     li_minimize(h)
+    if late():
+        return (False, None)
 
     # B3 cua so game MOI
     g = None
-    end = time.time() + 120
-    while time.time() < end and not stopped():
+    while time.time() < deadline and not stopped():
         fresh = [x for x in li_game_windows(gtitle) if x not in before]
         if fresh:
             g = li_pick_window(fresh); break
@@ -1560,36 +1672,70 @@ def li_run_account(acc, cfg, log):
     if g is None and not before:
         g = li_pick_window(li_game_windows(gtitle))
     if g is None:
+        if late():
+            return (False, None)
         log("  [loi] khong co cua so game moi"); return (False, None)
     _ensure_foreground(g)
     ACTIVE_HWND[0] = g
     time.sleep(LI_STEP_PAUSE)
+    if late(g):
+        return (False, None)
 
     # B4 Credit = tin hieu load xong
-    if stopped() or not li_wait_img_present(g, "credit"):
+    if not li_wait_img_present(g, "credit", timeout=rem()):
+        li_close_hwnd(g)
         return (False, None)
     time.sleep(LI_STEP_PAUSE)
+    if late(g):
+        return (False, None)
 
-    # B5/B6 Dang nhap -> Server
-    _ensure_foreground(g); li_click_rel(g, login_pt[0], login_pt[1]); time.sleep(LI_STEP_PAUSE)
-    _ensure_foreground(g); li_click_rel(g, srv_pt[0], srv_pt[1]); time.sleep(LI_STEP_PAUSE)
+    # B5/B6 Dang nhap -> Server (li_click_rel tu active + verify duoi tro)
+    li_click_rel(g, login_pt[0], login_pt[1]); time.sleep(LI_STEP_PAUSE)
+    li_click_rel(g, srv_pt[0], srv_pt[1]); time.sleep(LI_STEP_PAUSE)
+    if late(g):
+        return (False, None)
 
     # B7 clipboard dang nhap
     _ensure_foreground(g); li_type_credentials(acc["user"], acc["password"])
     time.sleep(LI_STEP_PAUSE)
 
-    # B8 Connect -> bam
-    if stopped() or not li_wait_img_click(g, "connect"):
-        return (False, g)
+    # B8 Connect -> bam (hong → DONG cua so game: de mo lan sau thay cua so cu
+    # o man hinh connect, B3 se khong tim duoc cua so moi va ket tang)
+    if not li_wait_img_click(g, "connect", timeout=rem()):
+        li_close_hwnd(g)
+        return (False, None)
     time.sleep(LI_STEP_PAUSE)
+    if late(g):
+        return (False, None)
 
     # B9 4 diem sau Connect (co dinh trong config; thieu -> bo qua)
     for j in range(1, 5):
-        if stopped():
-            return (False, g)
+        if late(g):
+            return (False, None)
         pt = li_parse_pt(coords.get(f"post{j}"))
         if pt:
-            _ensure_foreground(g); li_click_rel(g, pt[0], pt[1]); time.sleep(LI_STEP_PAUSE)
+            li_click_rel(g, pt[0], pt[1]); time.sleep(LI_STEP_PAUSE)
+
+    # B10a: doi NHAN VATVao WORLD that su (title doi thành [Char:..][Level:..]).
+    # Ctrl+F bam luc CON o man hinh chon nhan vat / loading = VO NGHIA
+    # (icon Giam tai chi ton tai trong world) → day la ly do "login xong ma
+    # khong vao Giam tai, log khong thay".
+    end_w = min(time.time() + 120, deadline + 120)
+    while time.time() < end_w and not stopped():
+        nm_w, lv_w = read_title(g)
+        if nm_w:
+            log(f"  [LI] {acc['user']}: da vo world ({nm_w} Lv {lv_w})")
+            break
+        time.sleep(1.0)
+    else:
+        log(f"  [LI] {acc['user']}: chua thay title nhan vat — van thu bat Giam tai")
+
+    # B10b: → BAT GIAM TAI cho cua so nay (verify hinh, toi da 10 lan)
+    _ensure_foreground(g)
+    if send_ctrl_f_on(g):
+        log(f"  [LI] {acc['user']}: ✔ DA VAT Giam tai (icon xuat hien)")
+    else:
+        log(f"  [LI] {acc['user']}: Giam tai CHUA bat duoc — train se thu lai")
     return (True, g)
 
 
@@ -1602,10 +1748,16 @@ def li_run_all(cfg, accounts, log, on_done=None):
         enabled = [a for a in accounts if a.get("user") and a.get("enabled", True)]
         for i, acc in enumerate(enabled, 1):
             log(f"===== LI {i}/{len(enabled)}: {acc['user']} (S{int(acc['server_index'])+1}) =====")
-            for attempt in range(1, 4):
+            attempt = 0
+            # MOI LAN THU co deadline 5 phut (LI_TOTAL_TIMEOUT) trong
+            # li_run_account; het gio → cua so game bi dong → LAP LAI TU DAU,
+            # khong gioi han 3 lan nua — chi dung khi thanh cong hoac PgUp.
+            while True:
                 if STOP_REQUESTED[0] or check_stop_key():
                     log(">> LI dung."); return
-                ok, g = li_run_account(acc, cfg, log)
+                attempt += 1
+                ok, g = li_run_account(
+                    acc, cfg, log, deadline=time.time() + LI_TOTAL_TIMEOUT)
                 if ok:
                     ok_n += 1
                     if g:
@@ -1614,7 +1766,8 @@ def li_run_all(cfg, accounts, log, on_done=None):
                     LI_RELOGIN_WAIT.pop(acc["user"], None)
                     log(f"  ✔ {acc['user']} xong" + (f" hwnd={g}" if g else ""))
                     break
-                log(f"  {acc['user']}: lan {attempt}/3 that bai — thu lai")
+                log(f"  {acc['user']}: lan {attempt} that bai/qua gio — "
+                    f"lam lai tu dau")
                 time.sleep(LI_STEP_PAUSE)
         log(f"===== LI xong: {ok_n}/{len(enabled)} =====")
     except Exception as e:
@@ -1851,10 +2004,13 @@ def main():
             set_status("Khong chup duoc man hinh (mo cua so nguon truoc).")
             return False
         from PIL import Image, ImageTk
+        prev_grab = root.grab_current()   # modal dang mo (LI Config) — overlay
+                                          # phai gianh grab thi moi keo duoc
         ov = tk.Toplevel(root)
         ov.attributes("-fullscreen", True)
         ov.attributes("-topmost", True)
         ov.configure(bg="black", cursor="crosshair")
+        ov.grab_set()
         ov.lift()
         cv = tk.Canvas(ov, bg="black", highlightthickness=0)
         cv.pack(fill="both", expand=True)
@@ -1904,6 +2060,8 @@ def main():
         cv.bind("<B1-Motion>", drag)
         cv.bind("<ButtonRelease-1>", release)
         ov.bind("<Escape>", esc)
+        # dong overlay → tra grab ve modal cu (neu co) de tiep tuc dung
+        ov.bind("<Destroy>", lambda _e: prev_grab and prev_grab.grab_set())
         return True
 
     def center_on_root(dlg, w=None, h=None):
@@ -2239,15 +2397,8 @@ def main():
             pass
     # ===== TAB CONFIG — luu 5 GRID doc; moi grid: Map/Spot hang tren,
     # Min/Max hang duoi; chieu rong grid = chieu rong card (50% cu). =====
-    main_col = (ctk.CTkFrame(content, fg_color="transparent") if USE_CTK
-                else tk.Frame(content, bg=BG))
-    TABS["cfg"] = main_col
-    if USE_CTK:
-        main_col.grid_columnconfigure(0, weight=1)
-        main_col.grid_rowconfigure(0, weight=1)
-    else:
-        main_col.columnconfigure(0, weight=1)
-        main_col.rowconfigure(0, weight=1)
+    TABS["cfg"] = None   # dat o duoi, sau khi co grid_card (bo wrapper main_col
+                         # — card nam truc tiep trong content nhu tab khac)
 
     GAP = 6
     CELL_W = 112          # = 1/2 chieu rong card tru le → 2 cot/xen Map|Spot, Min|Max
@@ -2301,8 +2452,8 @@ def main():
         spot_combo.grid(row=0, column=1, sticky="ew", padx=HALF)
         return hb
 
-    grid_card = card(main_col)
-    grid_card.grid(row=0, column=0, sticky="nsew", padx=PAD, pady=PAD)
+    grid_card = card(content)
+    TABS["cfg"] = grid_card
     grid_card.grid_columnconfigure(0, weight=1)
     spot_combo = None
     hdr_box = _spot_hdr_row()
@@ -2734,98 +2885,133 @@ def main():
     li_hdr.grid_columnconfigure((0, 1), weight=1, uniform="lihdr")
     btn_li_cfg = btn_secondary(li_hdr, "⚙ Config", command=lambda: li_open_config())
     btn_li_cfg.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-    btn_li_add = btn_secondary(li_hdr, "➕ Account", command=lambda: li_add_row())
+    btn_li_add = btn_secondary(li_hdr, "➕ Account", command=lambda: li_edit_account())
     btn_li_add.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
     btn_li_run = btn_primary(li_card, "▶  Chay login", width=0, height=30,
                              command=lambda: li_run_clicked())
     btn_li_run.grid(row=1, column=0, sticky="ew", padx=8, pady=(6, 0))
 
-    # Danh sach account: 1 dong / account, co thanh truot doc.
-    li_list_wrap = tk.Frame(li_card, bg=CARD)
-    li_list_wrap.grid(row=2, column=0, sticky="nsew", padx=8, pady=8)
-    li_list_wrap.grid_columnconfigure(0, weight=1)
-    li_list_wrap.grid_rowconfigure(0, weight=1)
-    li_canvas = tk.Canvas(li_list_wrap, bg=CARD, highlightthickness=0)
-    li_canvas.grid(row=0, column=0, sticky="nsew")
-    li_scroll = ttk.Scrollbar(li_list_wrap, orient="vertical",
-                              command=li_canvas.yview)
-    li_scroll.grid(row=0, column=1, sticky="ns")
-    li_canvas.configure(yscrollcommand=li_scroll.set)
-    li_list_parent = tk.Frame(li_canvas, bg=CARD)
-    _li_win = li_canvas.create_window((0, 0), window=li_list_parent, anchor="nw")
-    def _li_sync(_evt=None):
-        li_canvas.configure(scrollregion=li_canvas.bbox("all") or (0, 0, 0, 0))
-        li_canvas.itemconfigure(_li_win, width=li_canvas.winfo_width())
-    li_list_parent.bind("<Configure>", _li_sync)
-    def _li_wheel(ev):
-        li_canvas.yview_scroll(-1 if ev.delta > 0 else 1, "units")
-        return "break"
-    li_canvas.bind("<MouseWheel>", _li_wheel)
-    li_list_parent.bind("<MouseWheel>", _li_wheel)
+    # Danh sach account: CHI hien Username (bam vao de sua). Bo thanh truot —
+    # modal now giu thong tin, danh sach ngan gon khong can cuon.
+    li_list_parent = tk.Frame(li_card, bg=CARD)
+    li_list_parent.grid(row=2, column=0, sticky="nsew", padx=8, pady=8)
+    li_list_parent.grid_columnconfigure(0, weight=1)
 
-    li_acc_rows = []      # moi: {"frame","cb","user","srv","del","data"}
+    li_accounts = []      # nguon du lieu duy nhat: list dict account
 
     def li_snapshot_accounts():
-        out = []
-        for rec in li_acc_rows:
-            out.append({"user": rec["user"].get().strip(),
-                        "password": rec["password"].get(),
-                        "server_index": int(rec["srv"].get().split()[-1]) - 1,
-                        "char_name": rec["char"].get().strip(),
-                        "enabled": bool(rec["cb"].get())})
-        return out
+        return [dict(a) for a in li_accounts]
 
-    def li_add_row(acc=None):
-        acc = acc or li_default_account()
-        rown = len(li_acc_rows)
-        box = tk.Frame(li_list_parent, bg=CARD)
-        box.grid(row=rown, column=0, sticky="ew", padx=2, pady=2)
-        enabled = tk.BooleanVar(value=bool(acc.get("enabled", True)))
-        cb = tk.Checkbutton(box, variable=enabled, width=0)
-        cb.grid(row=0, column=0, sticky="w")
-        u = tk.StringVar(value=acc.get("user", ""))
-        p = tk.StringVar(value=acc.get("password", ""))
-        ch = tk.StringVar(value=acc.get("char_name", ""))
-        s = tk.StringVar(value=f"Server {int(acc.get('server_index', 0)) + 1}")
-        tk.Entry(box, textvariable=u, font=f_small,
-                 relief="solid", bd=1).grid(row=0, column=1, sticky="ew",
-                                            padx=(2, 2))
-        tk.Entry(box, textvariable=p, font=f_small, show="*",
-                 relief="solid", bd=1).grid(row=0, column=2, sticky="ew",
-                                            padx=(0, 2))
-        tk.Entry(box, textvariable=ch, font=f_small,
-                 relief="solid", bd=1).grid(row=0, column=3, sticky="ew",
-                                           padx=(0, 2))
-        ttk.Combobox(box, textvariable=s, state="readonly", font=f_small,
-                     width=8, values=[f"Server {i + 1}" for i in range(5)]
-                     ).grid(row=0, column=4, sticky="e")
-        box.grid_columnconfigure(1, weight=1)
-        box.grid_columnconfigure(2, weight=1)
-        box.grid_columnconfigure(3, weight=1)
-        rec = {"frame": box, "cb": cb, "var": enabled, "user": u,
-               "password": p, "char": ch, "srv": s}
-        def _on_edit(*a):
-            try:
-                li_save_accounts(load_li_cfg(), li_snapshot_accounts())
-                refresh_spot_choices()
-            except Exception:
-                pass
-        for v in (u, p, ch, s, enabled):
-            v.trace_add("write", _on_edit)
-        li_acc_rows.append(rec)
+    def li_persist():
+        try:
+            li_save_accounts(load_li_cfg(), li_accounts)
+            refresh_spot_choices()
+        except Exception:
+            pass
 
-    def li_render_accounts(accs):
-        for rec in li_acc_rows:
-            rec["frame"].destroy()
-        li_acc_rows.clear()
-        for a in accs:
-            li_add_row(a)
+    def li_edit_account(idx=None):
+        """Modal nhap thong tin 1 account (them moi neu idx=None, sua neu co).
+        Size + vi tri = dung GUI chinh (overlay len tool)."""
+        acc = dict(li_accounts[idx]) if idx is not None else li_default_account()
+        dlg = tk.Toplevel(root)
+        dlg.title("Sua account" if idx is not None else "Them account")
+        dlg.transient(root); dlg.grab_set(); dlg.configure(bg=CARD)
+        dlg.resizable(False, False)
+        # trung kich thuoc + vi tri GUI chinh
+        dlg.geometry(f"{root.winfo_width()}x{root.winfo_height()}"
+                     f"+{root.winfo_rootx()}+{root.winfo_rooty()}")
+
+        def field(labeltext, key, default=""):
+            tk.Label(dlg, text=labeltext, font=f_small, fg=MUTED, bg=CARD
+                     ).pack(anchor="w", padx=14, pady=(10, 0))
+            v = tk.StringVar(value=str(acc.get(key, default)))
+            e = tk.Entry(dlg, textvariable=v, font=f_body, relief="solid", bd=1)
+            e.pack(fill="x", padx=14)
+            return v, e
+
+        u_v, u_e = field("Username:", "user")
+        p_v, p_e = field("Mật khẩu:", "password")
+        p_e.configure(show="*")
+        c_v, _ = field("Tên nhân vật:", "char_name")
+        tk.Label(dlg, text="Server:", font=f_small, fg=MUTED, bg=CARD
+                 ).pack(anchor="w", padx=14, pady=(10, 0))
+        s_v = tk.StringVar(value=f"Server {int(acc.get('server_index', 0)) + 1}")
+        ttk.Combobox(dlg, textvariable=s_v, state="readonly", font=f_body,
+                     values=[f"Server {i + 1}" for i in range(5)]
+                     ).pack(fill="x", padx=14)
+        en_v = tk.BooleanVar(value=bool(acc.get("enabled", True)))
+        tk.Checkbutton(dlg, text="Kích hoạt (login + watchdog relogin)",
+                       variable=en_v, font=f_small, bg=CARD,
+                       activebackground=CARD).pack(anchor="w", padx=12, pady=(10, 0))
+
+        def _save():
+            user = u_v.get().strip()
+            if not user:
+                set_status("Username trong — khong luu.")
+                return
+            # trung user (khong tinh chinh no khi sua) → chan
+            for i, a in enumerate(li_accounts):
+                if a["user"] == user and i != idx:
+                    set_status(f"Username '{user}' da ton tai.")
+                    return
+            new = {"user": user, "password": p_v.get(),
+                   "server_index": int(s_v.get().split()[-1]) - 1,
+                   "char_name": c_v.get().strip(), "enabled": bool(en_v.get())}
+            if idx is None:
+                li_accounts.append(new)
+            else:
+                li_accounts[idx] = new
+            li_persist()
+            li_render_accounts()
+            dlg.destroy()
+
+        btnfr = tk.Frame(dlg, bg=CARD); btnfr.pack(fill="x", padx=14, pady=14)
+        tk.Button(btnfr, text="Lưu", command=_save, font=f_body, relief="flat",
+                  bd=0, bg=ACCENT, fg="#FFFFFF"
+                  ).pack(side="left", expand=True, fill="x", ipady=4, padx=(0, 4))
+        tk.Button(btnfr, text="Hủy", command=dlg.destroy, font=f_body,
+                  relief="flat", bd=0, bg="#F2F2F7", fg=TEXT
+                  ).pack(side="left", expand=True, fill="x", ipady=4, padx=(4, 0))
+        if idx is not None:
+            tk.Button(btnfr, text="🗑", command=lambda: (li_del_account(idx),
+                      dlg.destroy()), font=f_body, relief="flat", bd=0,
+                      bg="#F2F2F7", fg=DOT_RED).pack(side="left", padx=(8, 0), ipadx=6, ipady=2)
+        dlg.bind("<Return>", lambda _e: _save())
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        u_e.focus_set()
+
+    def li_del_account(idx):
+        if 0 <= idx < len(li_accounts):
+            li_accounts.pop(idx)
+            li_persist()
+            li_render_accounts()
+
+    def li_render_accounts():
+        for w in li_list_parent.winfo_children():
+            w.destroy()
+        for i, a in enumerate(li_accounts):
+            box = tk.Frame(li_list_parent, bg="#F2F2F7")
+            box.grid(row=i, column=0, sticky="ew", padx=2, pady=2)
+            dot = "●" if a.get("enabled", True) else "○"
+            col = "#34C759" if a.get("enabled", True) else MUTED
+            tk.Label(box, text=dot, font=f_small, fg=col, bg="#F2F2F7"
+                     ).pack(side="left", padx=(6, 0))
+            lbl = tk.Label(box, text=a.get("user") or "(trống)", font=f_body,
+                           fg=TEXT, bg="#F2F2F7", anchor="w")
+            lbl.pack(side="left", fill="x", expand=True, padx=6, ipady=3)
+            for wdg in (box, lbl):
+                wdg.bind("<Button-1>", lambda _e, k=i: li_edit_account(k))
+                wdg.configure(cursor="hand2")
 
     def li_open_config():
         dlg = tk.Toplevel(root)
         dlg.title("LI Config")
         dlg.transient(root); dlg.grab_set(); dlg.configure(bg=CARD)
+        # trung kich thuoc + vi tri GUI chinh (overlay len tool)
+        dlg.resizable(False, False)
+        dlg.geometry(f"{root.winfo_width()}x{root.winfo_height()}"
+                     f"+{root.winfo_rootx()}+{root.winfo_rooty()}")
         cfg = load_li_cfg()
         rows = []
         def add_row(labeltext, key, default=""):
@@ -2866,14 +3052,20 @@ def main():
                       font=f_small, relief="flat", bd=0, bg="#F2F2F7"
                       ).pack(side="left", padx=2, pady=2)
         coordfr = tk.Frame(dlg, bg=CARD); coordfr.pack(fill="x", padx=10)
+        _cb = {"n": 0}
         def _coord_btn(key, labeltext):
             def go():
                 pt = li_capture_coord_via_cursor()
                 if pt:
                     coords[key] = list(pt)
                     set_status(f"{labeltext} = {pt}")
+            i = _cb["n"]; _cb["n"] += 1
             tk.Button(coordfr, text=f"◎ {labeltext}", command=go, font=f_small,
-                      relief="flat", bd=0, bg="#F2F2F7").pack(side="left", padx=2, pady=2)
+                      relief="flat", bd=0, bg="#F2F2F7"
+                      ).grid(row=i // 5, column=i % 5, sticky="ew",
+                             padx=2, pady=2)
+        for c in range(5):
+            coordfr.grid_columnconfigure(c, weight=1)
         _coord_btn("login", "Login")
         for i in range(5):
             _coord_btn(f"s{i}", f"S{i+1}")
@@ -2898,28 +3090,64 @@ def main():
         return li_grab_hwnd(h) if h else None
 
     def li_capture_coord_via_cursor():
-        """Cho 3s de tro chuot toi diem trong cua so game -> tra (x,y) TUONG DOI
-        cua so game (chup theo title game)."""
+        """Chup anh cua so game -> overlay fullscreen hien anh -> BAM 1 DIEM
+        tren anh -> tra (x,y) TUONG DOI cua so game. (Cu dung root.withdraw +
+        sleep 3s block mainloop va bi modal grab_set chan Chuot → khong dung
+        duoc; bay gio theo co che overlay nhu capture_icon.)"""
         cfg = load_li_cfg()
         g = li_pick_window(li_find_windows(cfg.get("game_title", "Season21")))
         if not g:
-            set_status("Chua co cua so game de lay toa do")
+            g = ACTIVE_HWND[0] if ACTIVE_HWND[0] and user32.IsWindow(ACTIVE_HWND[0]) else None
+        if not g:
+            # title game da doi (da vo world) → cua so cua process game
+            r2 = find_window_hwnd()
+            if r2:
+                g = r2[1]
+        if not g:
+            set_status("Tim khong thay cua so game (mo game truoc)")
             return None
-        set_status("Di chuot toi diem (3s)...")
-        root.withdraw()
-        start = time.time()
-        pt = wt.POINT()
-        while time.time() - start < 3.0:
-            time.sleep(0.05)
-        user32.GetCursorPos(ctypes.byref(pt))
-        root.deiconify()
+        shot = li_grab_hwnd(g)
+        if shot is None:
+            set_status("Khong chup duoc cua so game.")
+            return None
+        from PIL import Image, ImageTk
+        prev_grab = root.grab_current()
+        box = {"pt": None}
+        ov = tk.Toplevel(root)
+        ov.attributes("-fullscreen", True)
+        ov.attributes("-topmost", True)
+        ov.configure(bg="black", cursor="crosshair")
+        ov.grab_set()
+        ov.lift()
+        cv = tk.Canvas(ov, bg="black", highlightthickness=0)
+        cv.pack(fill="both", expand=True)
+        SW, SH = ov.winfo_screenwidth(), ov.winfo_screenheight()
+        scale = min(2, max(1, SW // shot.width, SH // shot.height))
+        im = shot if scale == 1 else shot.resize(
+            (shot.width * scale, shot.height * scale), Image.LANCZOS)
+        tk_img = ImageTk.PhotoImage(im)
+        ox, oy = (SW - im.width) // 2, (SH - im.height) // 2
+        cv.create_image(ox, oy, anchor="nw", image=tk_img)
+        cv._img_ref = tk_img
+        cv.create_text(SW // 2, 24, fill="#FFD60A", font=("Segoe UI", 17, "bold"),
+                       text=f"BAM 1 DIEM vao vi tri can lay toa do  "
+                            f"(x{scale}, Esc de huy)")
+
+        def _click(e):
+            box["pt"] = ((e.x - ox) // scale, (e.y - oy) // scale)
+            ov.destroy()
+
+        cv.bind("<ButtonRelease-1>", _click)
+        ov.bind("<Escape>", lambda _e: ov.destroy())
+        ov.bind("<Destroy>", lambda _e: prev_grab and prev_grab.grab_set())
+        ov.wait_window()   # block TREN OVERLAY, mainloop van chay -> khong dong bang
         r = wt.RECT()
         user32.GetWindowRect(g, ctypes.byref(r))
-        rx, ry = pt.x - r.left, pt.y - r.top
-        if not (0 <= rx < (r.right - r.left) and 0 <= ry < (r.bottom - r.top)):
-            set_status("Con tro ngoai cua so game")
+        x, y = box["pt"] if box["pt"] else (0, 0)
+        if box["pt"] and not (0 <= x < (r.right - r.left) and 0 <= y < (r.bottom - r.top)):
+            set_status("Diem ngoai cua so game")
             return None
-        return (rx, ry)
+        return box["pt"]
 
     def li_run_clicked():
         if LI_BUSY[0]:
@@ -2935,7 +3163,11 @@ def main():
                          args=(cfg, accs, lambda s: set_status(s)),
                          daemon=True).start()
 
-    li_render_accounts(li_load_accounts(load_li_cfg()))
+    li_accounts.extend(li_load_accounts(load_li_cfg()))
+    li_render_accounts()
+    refresh_spot_choices()   # account san co (config cu / migrate) → dropdown
+                             # Spot phai co ngay luc mo tool, khong phai khi nao
+                             # modal luu moi refresh
 
     # --- Cap nhat toa do + ten/level hien tai (1s/lan) ---
     LIVE_POS = [None, None]

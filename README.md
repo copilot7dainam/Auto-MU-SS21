@@ -1,10 +1,10 @@
 # Auto-MU-SS21 — Tự động hóa nhân vật MU Online (Season 21)
 
 Bộ công cụ tự động hóa nhân vật **MU Online Season 21** (đã test với client
-**epicmu.net / EpicMU Part2 IGCN**): auto-move tới tọa độ bất kỳ bằng click giả
-lập + A*, chuỗi Train **đa cửa sổ** tự động theo level từng nhân vật, tự Reset
-stat, nhận diện trạng thái game **bằng hình ảnh**, và giải mã bản đồ `.att` làm
-lưới walkable 256×256.
+**epicmu.net / EpicMU Part2 IGCN**): auto-login **đa tài khoản** bằng nhận diện
+hình ảnh, auto-move tới tọa độ bất kỳ bằng click giả lập + A*, chuỗi Train
+**đa cửa sổ** tự động theo level từng nhân vật, tự Reset stat, và giải mã bản đồ
+`.att` làm lưới walkable 256×256.
 
 > ⚠️ **Cảnh báo**: đọc memory và điều khiển click client game có thể vi phạm điều
 > khoản dịch vụ của server. Tự chịu trách nhiệm khi sử dụng. Chạy quyền
@@ -33,60 +33,90 @@ pip install pymem customtkinter numpy pillow opencv-python pyinstaller
 python mu_goto.py
 ```
 
-Build exe từ source:
+### Tự nâng cấp từ tool MU-Login cũ
 
-```bash
-pyinstaller --onefile --windowed --name MU-Goto --collect-all customtkinter ^
-  --add-data "att_samples/_grid_cache;att_samples/_grid_cache" ^
-  --add-data "att_samples/map_index.json;att_samples" ^
-  --add-data "mu_goto_calib.json;." --add-data "mu_goto_spots.json;." ^
-  --add-data "mu_goto_helper.png;." --add-data "mu_goto_lt.png;." ^
-  --hidden-import pymem --hidden-import cv2 --hidden-import numpy --hidden-import PIL mu_goto.py
-```
-
-> **Bắt buộc phải nhúng `att_samples/map_index.json`** — file này ánh xạ MapID →
-> tên file grid (54/85 map có tên không theo quy ước `WorldN_Grid.json`). Thiếu
-> nó, exe không `load_grid` được ("không load được map tọa độ att").
+Lần chạy đầu, tab **LI** tự đọc `config.json` của MU-Login cũ (nếu có, nằm cạnh
+app hoặc `~/mu_login`): launcher path, tiêu đề cửa sổ, tọa độ, tài khoản —
+**không phải cài lại**. Key đã tồn tại không bao giờ bị ghi đè.
 
 ---
 
-## 2. Giao diện MU GOTO
+## 2. Giao diện
 
-Cửa sổ **cố định 460×430**, phong cách macOS. Hàng đầu: nút **▶ Train** (bằng
-chiều cao header tab) + 3 tab **Điều khiển / Cấu hình / Log**.
+Cửa sổ **cố định 280×520**, phong cách macOS. Hàng đầu: nút **▶ Train** + 4 tab
+**RR / Spot / Log / LI**. Mọi lựa chọn tự lưu, khôi phục lần sau mở tool.
 
-### Tab "Điều khiển"
+### Tab "RR" — Điều khiển
 - **▶ Train** — bật/tắt chuỗi train tự động (nhấn lần 1 chạy, nhấn lần 2 dừng).
   Xanh dương khi nghỉ → **xanh lá** khi đang chạy.
 - **↺ Reset** — hẹn lịch reset stat: chỉ chạy khi nhân vật đạt **Lv 400**.
   Nút **đỏ** khi đang chờ/đang chạy; nhấn lần 2 để hủy.
-  **Chuột phải** vào nút → bảng nhập 5 điểm cộng (str/agi/vit/ene/cmd).
-- **📷 Chụp ảnh** — modal giữa cửa sổ, xem trước ảnh đã chụp:
+  **Chuột phải** vào nút → modal nhập 5 điểm cộng (str/agi/vit/ene/cmd).
+- **📷 Camera** — modal chọn ảnh cần chụp, xem trước ảnh đã lưu:
   - **Helper** — icon khi Helper đang bật.
-  - **Giảm tải** — icon/nút khi Giảm tải đang bật.
+  - **Giảm tải** — icon khi Giảm tải đang bật.
   - **Chế độ đơn giản — ảnh A** — ảnh chỉ báo chế độ đơn giản ĐÃ BẬT.
   - **Điểm B** — phủ màn hình trong suốt, **bấm 1 điểm** đúng nút bật đơn giản
     trong game → tool lưu tọa độ (tương đối client) vào config.
-- **Thanh tiến trình** — mỗi cửa sổ game là **1 bar** bo tròn (mỏng hơn khi >5
-  cửa sổ): fill **xanh lá** theo level, **đỏ khi đủ Lv 400**; tên / Lv / tọa độ
-  nằm **bên trong** bar. Tự thêm/xóa bar khi mở/đóng game.
+- **Thanh tiến trình** — mỗi cửa sổ game là **1 bar** bo tròn: fill **xanh lá**
+  theo level, **đỏ khi đủ Lv 400**; tên + Lv nằm **bên trong** bar. Tự
+  thêm/xóa bar khi mở/đóng game. Chấm **vàng** = cửa sổ đang được duyệt.
 
-### Tab "Cấu hình"
-Lưới 5 dòng train, mỗi dòng 4 cột đều 87px cách nhau 10px:
-`Map` (dropdown /move) · `Spot` · `Min` · `Max` + nút `+` lưu tọa độ hiện tại.
+### Tab "Spot" — Cấu hình chuỗi train
+- **1 grid choán toàn tab**, hàng đầu = dropdown **Account**: chọn "(Chung)" hoặc
+  từng username (khai báo ở tab LI) → **5 dòng train riêng theo từng account**.
+- Mỗi dòng: `Map` (dropdown lệnh /move) · `Spot` (dropdown tọa độ đã lưu) ở
+  hàng trên, `Min` · `Max` (level vào bãi) ở hàng dưới. Grid tự lưu mọi sửa đổi.
+- Tên nhân vật trong title cửa sổ khớp `char_name` tài khoản nào → train tự áp
+  đúng 5 dòng của tài khoản đó.
 
 ### Tab "Log"
-Log chạy **trong ứng dụng** (không xuất file): kéo con lăn chuột để xem log cũ.
-Đường đi **không** in từng điểm — chỉ báo **DEN NOI** khi tới nơi.
+- 2 listbox cuộn độc lập trong ứng dụng (không xuất file): **lịch sử reset**
+  trên, **log tiến trình** dưới. Kéo con lăn chuột để xem log cũ.
+- Lịch sử reset ghi gọn: `Tên reset ( avg X phút / N lần )`.
+- Đường đi **không** in từng điểm — chỉ báo **DEN NOI** khi tới nơi.
 
-Toàn bộ lựa chọn tự lưu và khôi phục lần sau mở tool.
+### Tab "LI" — Auto-login
+- **➕ Account** — modal nhập đầy đủ tài khoản **trùng kích thước + vị trí cửa sổ
+  chính**: Username, Mật khẩu (ẩn), Tên nhân vật, Server 1–5, checkbox Kích hoạt.
+  Enter = Lưu, Esc = Hủy, chống trùng username.
+- **Danh sách tài khoản** — mỗi dòng **chỉ hiện Username** (chấm xanh = enabled,
+  xám = tắt). **Bấm vào username** → mở modal sửa / xóa (🗑).
+- **⚙ Config** — modal cùng size cửa sổ chính:
+  - `Launcher path` (+ nút **Chon** file), `Title launcher` / `Title game` (regex).
+  - 📷 **Play / Credit / Connect** — chụp template 3 nút (kéo vùng trên ảnh chụp
+    launcher/game, scale 2× cho dễ chọn).
+  - ◎ **Login, S1–S5, P1–P4** — lấy tọa độ: tool chụp cửa sổ game, hiện fullscreen,
+    **bấm 1 điểm** trên ảnh → lưu tọa độ tương đối. (P1–P4 = 4 bước sau Connect.)
+  - **Luu** — ghi toàn bộ vào `mu_goto_li.json`.
+- **▶ Chay login** — chạy lần lượt từng tài khoản enabled.
 
----
+## 3. Luồng auto-login (tab LI)
 
-## 3. Train đa cửa sổ (kịch bản đầy đủ)
+```
+Launcher: đã tồn tại (ke ca minimize) → maximize + active → bấm Play → minimize
+          chưa tồn tại                → mới mở exe duy nhất 1 lần
+→ chờ của số game MOI → chờ ảnh Credit (load xong)
+→ bam Login → bam Server N → paste user / Tab / pass / Enter
+→ tim anh Connect → bam → bam P1..P4 (bo qua neu chua cau hinh)
+→ DOI TITLE = [Char:..] xac nhan da vo WORLD → Ctrl+F bat Giam tai (verify icon)
+```
+
+- **Deadline 5 phút/toàn luồng**: qua giờ hoặc PgUp → **dong cửa sổ game → làm
+  lại từ đầu**, không giới hạn số lần thử.
+- **Mọi click đều xác minh**: active đúng cửa sổ, đưa chuột tới điểm, poll tới 8s
+  cho đến khi cửa sổ đích thực sự nằm dưới con trỏ mới bấm — chống click rơi vào
+  lúc game đang chuyển màn hình.
+- **Watchdog relogin**: cửa sổ game đã bind với tài khoản mà biến mất (rơi
+  mạng/đóng nhầm) → tool **tự đăng nhập lại** — cả khi đang Train (dừng train
+  tạm thời, thread riêng) lẫn khi nghỉ. Fail ≥3 lần → nghỉ 60s rồi thử lại.
+- Login tranh chấp với Train được chặn bằng cờ `LI_BUSY` — không bao giờ hai
+  luồng cùng bấm bàn phím một lúc.
+
+## 4. Train đa cửa sổ (kịch bản đầy đủ)
 
 Tool **quét liên tục** các cửa sổ game, **mỗi cửa sổ cách nhau 2s**; mỗi nhân
-vật chạy chuỗi riêng theo **Lv của chính nó**:
+vật chạy chuỗi riêng theo **Lv của chính nó** + cấu hình riêng theo account:
 
 ```
 Đủ Lv Max dòng → Tắt Giảm tải (verify icon MẤT, tối đa 10 lần bấm)
@@ -103,7 +133,7 @@ vật chạy chuỗi riêng theo **Lv của chính nó**:
   không bao giờ bật/tắt nhầm.
 - **PgUp** = dừng mọi thứ ngay lập tức.
 
-## 4. Ba lớp kiểm tra trạng thái
+## 5. Ba lớp kiểm tra trạng thái
 
 | Lớp | Cách hoạt động |
 |-----|----------------|
@@ -118,8 +148,10 @@ vật chạy chuỗi riêng theo **Lv của chính nó**:
   **dừng chuỗi ở cửa sổ đó**, hoãn sang lượt duyệt sau; **không** /move,
   **không** reset, **không** chạy bước kế tiếp.
 - Mỗi click xác minh **cửa sổ dưới con trỏ đúng là cửa sổ đang làm việc**
-  (WindowFromPoint + BringWindowToTop, retry 3 lần) — chống thao tác nhầm
-  cửa sổ khi nhiều game chồng nhau.
+  (WindowFromPoint + BringWindowToTop) — chống thao tác nhầm cửa sổ khi nhiều
+  game chồng nhau.
+- Toạ độ khớp ảnh được quy chiếu **window-relative** (trừ offset title bar) →
+  click trúng tâm nút, không lệch.
 
 - Phạm vi quét ảnh: **chỉ vùng client của cửa sổ game đang thao tác** (không
   phải toàn màn hình), ngưỡng khớp 0.90 (chống khớp nhầm nút Pause cùng màu).
@@ -128,7 +160,7 @@ vật chạy chuỗi riêng theo **Lv của chính nó**:
 - Phím gửi bằng `keybd_event` **scan code thật** + xác minh đúng foreground
   window — cách duy nhất hoạt động với client MU này.
 
-## 5. Cơ chế di chuyển
+## 6. Cơ chế di chuyển
 
 1. Gửi `/move <map>` → **chờ 3s** → click điểm cố định **(400,300)** ép game
    cập nhật tọa độ memory → đọc tới khi **ổn định**.
@@ -139,14 +171,14 @@ vật chạy chuỗi riêng theo **Lv của chính nó**:
    `/move` lại từ đầu.
 5. Trước `/move`: nếu còn thấy nút Giảm tải → tắt trước.
 
-## 6. Reset stat
+## 7. Reset stat
 
 - Bấm nút Reset = **hẹn giờ**: chỉ chạy khi Lv 400 (nhấn lần 2 để hủy).
 - Đạt Lv 400 trong lúc Train = **tự động** chạy chuỗi, xong quay lại dòng 1.
 - Chuỗi: `/reset` (chờ 5s) → `/addagi auto 32000` **trước**, rồi
   `/addstr|ene|vit|cmd auto 32000` → các lệnh `/add... <điểm>` theo cấu hình.
 
-## 7. Quyền chuột & an toàn
+## 8. Quyền chuột & an toàn
 
 - Khi tool chiếm chuột (di chuyển), **mọi click vật lý của người dùng bị chặn**
   bằng low-level hook (click do tool phát vẫn hoạt động). Thả ngay khi dừng.
@@ -156,13 +188,23 @@ vật chạy chuỗi riêng theo **Lv của chính nó**:
 
 ---
 
-## 8. Test toàn bộ map (`mu_goto_test.py`)
+## 9. File config (cạnh exe)
+
+| File | Nội dung |
+|------|----------|
+| `mu_goto_cfg.json` | 5 dòng "(Chung)" (định dạng cũ) |
+| `mu_goto_li.json` | Tài khoản LI + launcher + template + tọa độ Login/S1-5/P1-4 |
+| `mu_goto_spots.json` | Danh sách tọa độ /move đã lưu theo map |
+| `rows_map` (trong cfg) | 5 dòng train **riêng từng account** |
+| `li_templates/*.png` | Ảnh Play / Credit / Connect |
+
+## 10. Test toàn bộ map (`mu_goto_test.py`)
 
 Mô phỏng pathfinding trên mọi map có sẵn, **100 lần/map**: chọn ngẫu nhiên tọa
 độ hiện tại & đích (0–255), tính đường A* y hệt `mu_goto.py`. Tổng cộng
 85 × 100 = 8500 lần test.
 
-## 9. Dữ liệu bản đồ (grid)
+## 11. Dữ liệu bản đồ (grid)
 
 `mu_path.load_grid(map_num)` đọc grid walkable từ
 `att_samples/_grid_cache/World<map>.json`. Chưa có cache → lần đầu gọi
@@ -171,11 +213,15 @@ Mô phỏng pathfinding trên mọi map có sẵn, **100 lần/map**: chọn ng�
 **Trạng thái (2026-09):** đã có grid **85 map** (1–147 trừ các map thiếu dữ
 liệu); **62 map chưa giải được** do `att_dec.js` lỗi `algo2 unsupported 6`.
 
-## 10. Kiến trúc tóm tắt
+> **Bắt buộc phải nhúng `att_samples/map_index.json`** khi build exe — file này
+> ánh xạ MapID → tên file grid (54/85 map có tên không theo quy ước
+> `WorldN_Grid.json`). Thiếu nó, exe không `load_grid` được.
+
+## 12. Kiến trúc tóm tắt
 
 | Tầng | File chính |
 |------|-----------|
-| Giao diện / điều khiển | `mu_goto.py` (UI + train chain đa cửa sổ + verify ảnh) |
+| Giao diện / điều khiển / auto-login | `mu_goto.py` (UI + train chain + verify ảnh + LI) |
 | Core pathfinding | `mu_path.py` (A*, `load_grid`, `make_safe`, `nearest_walkable`) |
 | Giải mã & gallery | `gfxdec_src/att_dec.js`, `mu_att_html.py`, `mu_epic_gallery.py` |
 | Công cụ memory | `mu_find.py`, `mu_reader.py`, `mu_scanner.py`, `mu_ptrscan.py` |
