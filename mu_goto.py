@@ -14,6 +14,7 @@ Ma tran calib lay tu mu_goto_calib.json (do mu_calib.py tao).
 Su dung: python mu_goto.py
 """
 import sys, os, time, math, json, re, ctypes, ctypes.wintypes as wt, threading
+from datetime import datetime
 import tkinter as tk
 from tkinter import font as tkfont
 import tkinter.ttk as ttk
@@ -1517,37 +1518,33 @@ def main():
     sidebar = tab_ctrl
 
     # --- Thanh tien trinh DINH: 1 bar / 1 cua so game, hinh giong nut Train ---
-    # (chu nhat bo goc 10px). SLOT CO DINH: 10 hang o dinh vi tri khong doi —
-    # cua so moi vao cho trong dau tien, cua so dong thi cho trong do an di;
-    # cac bar con lai KHONG BAO GIO di chuyen. Cửa so dang thao tac: vien xanh
-    # duong quanh bar cua no.
+    # SLOT CO DINH: 10 hang o dinh vi tri khong doi; cua so moi vao cho trong
+    # dau tien, cua so dong thi cho trong do an di — cac bar khac khong dich.
+    # Dau moi bar chừa 6-8px; cua so dang duyet: CHAM DO o dau bar (bo vien
+    # xanh cu). Trong bar: ten nhan vat + Lv (bo map + toa do — khong du cho).
     bars_frame = (ctk.CTkFrame(sidebar, fg_color="transparent")
                   if USE_CTK else tk.Frame(sidebar, bg="#FFFFFF"))
     bars_frame.pack(fill="x", padx=PAD, pady=(0, 6))
     MAX_SLOTS = 10
     BAR_H = 22
     BAR_R = 10
-    SLOT_RING = 3
-    RING_ACTIVE = "#0A84FF"          # xanh duong
-    RING_IDLE = "#FFFFFF"            # trung voi nen -> khong thay vien
+    BAR_GAP = 8          # khoang chừa o dau bar (cho cham do)
+    DOT_RED = "#FF3B30"
 
     class Bar:
-        """Bar bo goc kieu nut Train: track xam nhat + fill mau + text trang."""
+        """Bar bo goc kieu nut Train: track xam nhat + fill mau + text trang.
+        active=True -> ve CHAM DO o dau (cua so dang duyet)."""
         def __init__(self, parent):
-            # width de nho (100): chieu rong that do fill="x" + Configure quyet
-            # dinh; khai bao BAR_W lan ra se tran card khi tab an/chiEN.
             self.h = BAR_H
             self.r = BAR_R
             self.c = tk.Canvas(parent, width=100, height=self.h,
                                highlightthickness=0, bg="#FFFFFF")
             self.c.pack(fill="x")
-            self.track = None
-            self.fill = None
-            self.txt = None
             self._w = 100
             self._pct = 0.0
             self._color = SUCCESS
             self._text = ""
+            self._active = False
             self.c.bind("<Configure>", self._resize)
             self._draw()
 
@@ -1565,33 +1562,40 @@ def main():
         def _draw(self):
             self.c.delete("all")
             w, h, r = self._w, self.h, self.r
-            self._rrect(0, 0, w, h, r, "#E9E9EE")
-            fw = int(w * self._pct)
+            # cham do o dau (trước track), giữ GAP cho no
+            if self._active:
+                d = 6
+                self.c.create_oval(2, (h - d) / 2.0, 2 + d, (h + d) / 2.0,
+                                   outline="", fill=DOT_RED)
+            x0 = BAR_GAP
+            tw = max(0, w - x0)
+            self._rrect(x0, 0, x0 + tw, h, r, "#E9E9EE")
+            fw = int(tw * self._pct)
             if fw > 2 * r:
-                self._rrect(0, 0, fw, h, r, self._color)
+                self._rrect(x0, 0, x0 + fw, h, r, self._color)
             elif fw > 0:
-                self.c.create_rectangle(0, 0, fw, h, fill=self._color,
+                self.c.create_rectangle(x0, 0, x0 + fw, h, fill=self._color,
                                         outline="")
             if self._text:
-                self.c.create_text(8, h / 2.0, anchor="w", text=self._text,
+                self.c.create_text(x0 + 8, h / 2.0, anchor="w", text=self._text,
                                    font=f_bar, fill="#FFFFFF")
 
-        def set(self, p, color, text=None):
+        def set(self, p, color, text=None, active=None):
             self._pct = max(0.0, min(1.0, p))
             self._color = color
             if text is not None:
                 self._text = text
+            if active is not None:
+                self._active = bool(active)
             self._draw()
 
         def clear(self):
-            self.set(0.0, SUCCESS, "")
+            self.set(0.0, SUCCESS, "", active=False)
 
     # Tao truoc MAX_SLOTS hang dinh vi tri (khong bao gio doi thu tu).
     SLOTS = []
     for _i in range(MAX_SLOTS):
-        holder = tk.Frame(bars_frame, bg="#FFFFFF",
-                          highlightthickness=SLOT_RING,
-                          highlightbackground=RING_IDLE)
+        holder = tk.Frame(bars_frame, bg="#FFFFFF")
         holder.pack(fill="x", pady=3)
         SLOTS.append({"frame": holder, "bar": Bar(holder), "hwnd": None})
 
@@ -1664,7 +1668,6 @@ def main():
         for sl in SLOTS:
             hwnd = sl["hwnd"]
             if hwnd is None:
-                sl["frame"].configure(highlightbackground=RING_IDLE)
                 continue
             BARS[hwnd] = sl["bar"]
             nm, lv = read_title(hwnd)
@@ -1672,14 +1675,9 @@ def main():
             txt = f"{nm or '?'} · Lv {lv if lv is not None else '?'}"
             active = (hwnd == ACTIVE_HWND[0])
             if active:
-                pm = get_pm_for(hwnd)
-                xy = rd_pos(pm) if pm else (None, None)
-                if xy[0] is not None:
-                    txt += f"  —  {fmt_live(xy[0], xy[1])}"
                 bar, cur = sl["bar"], sl["bar"].c
-            sl["frame"].configure(
-                highlightbackground=RING_ACTIVE if active else RING_IDLE)
-            sl["bar"].set(p, col, txt)
+            # cham do = cua so dang duyet; bo vien xanh cu
+            sl["bar"].set(p, col, txt, active=active)
         # an hang trong o CUOI; thu tich o giua van giu choang dung cho.
         # Pack theo THU TU NGUOC (9->0) de slot 0 luon o dau: pack() noi chung
         # day widget xuong cuoi, goc nguoc thi thu tu cuoi cung = 0,1,2...
@@ -1795,36 +1793,43 @@ def main():
         min_vars.append(tk.StringVar(value=""))
         max_vars.append(tk.StringVar(value=""))
 
-    # -- 5 card nho, khong nhan (bo Map/Spot/Min/Max text): [Map|Spot] tren,
-    # [Min|Max] duoi --
+    # ---- 1 GRID CHINH (1 card) chua cac dong; moi dong: [Map|Spot] tren,
+    # [Min|Max] duoi, tach nhau bang ke ngang mem (khong con card roi rac). ----
+    grid_card = card(inner)
+    grid_card.pack(fill="x", padx=0, pady=0)
+    grid_card.grid_columnconfigure(0, weight=1)
     for r in range(N_ROWS):
-        g = card(inner)
-        g.pack(fill="x", padx=2, pady=4)
+        row_box = tk.Frame(grid_card, bg=CARD)
+        row_box.grid(row=r, column=0, sticky="ew", padx=10,
+                     pady=(8 if r == 0 else 6, 0))
         for c in range(2):
-            g.grid_columnconfigure(c, weight=1, uniform=f"g{r}")
-        mvd = MapDropList(g, "Map", width=10, compact=True, btn_px=CELL_W)
+            row_box.grid_columnconfigure(c, weight=1, uniform=f"g{r}")
+        # row 0 = ke ngang mem (chua voi dong dau) — giu layout dong nhat
+        sep = tk.Frame(row_box, bg=BORDER if r else CARD, height=1 if r else 0)
+        sep.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        mvd = MapDropList(row_box, "Map", width=10, compact=True, btn_px=CELL_W)
         mv_drops.append(mvd)
         mvd.on_select = lambda i, r=r: pick_move(r, i)
-        mvd.head.grid(row=0, column=0, sticky="ew", padx=HALF, pady=(5, 2))
-        spd = MapDropList(g, "Spot", width=10, compact=True, btn_px=CELL_W)
+        mvd.head.grid(row=1, column=0, sticky="ew", padx=HALF, pady=(2, 4))
+        spd = MapDropList(row_box, "Spot", width=10, compact=True, btn_px=CELL_W)
         sp_drops.append(spd)
         spd.on_select = lambda i, r=r: pick_spot(r, i)
-        spd.head.grid(row=0, column=1, sticky="ew", padx=HALF, pady=(5, 2))
+        spd.head.grid(row=1, column=1, sticky="ew", padx=HALF, pady=(2, 4))
         vmin, vmax = min_vars[r], max_vars[r]
         if USE_CTK:
-            e_min = ctk.CTkEntry(g, textvariable=vmin, height=26,
+            e_min = ctk.CTkEntry(row_box, textvariable=vmin, height=26,
                                  font=f_body, border_color=BORDER,
                                  fg_color="#FAFAFA", justify="center")
-            e_max = ctk.CTkEntry(g, textvariable=vmax, height=26,
+            e_max = ctk.CTkEntry(row_box, textvariable=vmax, height=26,
                                  font=f_body, border_color=BORDER,
                                  fg_color="#FAFAFA", justify="center")
         else:
-            e_min = tk.Entry(g, textvariable=vmin, font=f_body,
+            e_min = tk.Entry(row_box, textvariable=vmin, font=f_body,
                              relief="solid", bd=1, bg="#FAFAFA", justify="center")
-            e_max = tk.Entry(g, textvariable=vmax, font=f_body,
+            e_max = tk.Entry(row_box, textvariable=vmax, font=f_body,
                              relief="solid", bd=1, bg="#FAFAFA", justify="center")
-        e_min.grid(row=1, column=0, sticky="ew", padx=HALF, pady=(0, 5))
-        e_max.grid(row=1, column=1, sticky="ew", padx=HALF, pady=(0, 5))
+        e_min.grid(row=2, column=0, sticky="ew", padx=HALF, pady=(0, 2))
+        e_max.grid(row=2, column=1, sticky="ew", padx=HALF, pady=(0, 2))
         # Luu moi khi sua Min/Max (nut "+" da bo — grid tu luu).
         vmin.trace_add("write", lambda *a: persist_rows())
         vmax.trace_add("write", lambda *a: persist_rows())
@@ -1886,7 +1891,6 @@ def main():
         log_add(f"  Đã lưu {tok}: {nm} ({x}, {y})")
 
     TRAIN_ACTIVE = [False]
-
     def train_chain():
         """Duyet LAN LUOT tung cua so game. Moi vong: tham 1 cua so — dam bao
         nhan vat o dung spot theo Lv cua no, Helper + Giam tai dang BAT — roi
@@ -1976,7 +1980,8 @@ def main():
                 log_add("  Chua thoat duoc Giam tai → HOAN lai cua so nay, "
                         "thu lai vong sau.")
                 return "visit"
-            reset_stats()
+            if reset_stats():
+                note_reset_success(nm)
             if STOP_REQUESTED[0]:
                 return "stopped"
             lv = 1
@@ -2039,12 +2044,9 @@ def main():
     btn_row.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
     btn_row.grid_columnconfigure((0, 1), weight=1, uniform="btnrow")
 
-    # Nut "Add Point": gan toa do hien tai cua nhan vat vao dong Spot dau tien
-    # chua chon (het cho thi dong 1) — thay cho nut "+" da bo o tab Spot.
-    def add_point_here():
-        target = next((r for r in range(N_ROWS) if sp_sel[r] is None), 0)
-        save_spot(target)
-    btn_addp = btn_secondary(btn_row, "📍 Add Point", command=add_point_here)
+    # Nut "Add Point": mo modal nhap so diem cong cho /addstr /addagi ... (KHONG
+    # phai toa do). Dung lai open_reset_dialog (nhap 5 diem, luu vao config).
+    btn_addp = btn_secondary(btn_row, "➕ Add Point", command=open_reset_dialog)
     btn_addp.grid(row=0, column=0, sticky="ew", padx=(0, 4))
     btn_cam = btn_secondary(btn_row, "📷 Camera", command=open_capture_dialog)
     btn_cam.grid(row=0, column=1, sticky="ew", padx=(4, 0))
@@ -2064,16 +2066,15 @@ def main():
     LIVE_POS = [None, None]
     _last_pos_text = [None]
     def set_pos_text(x, y):
-        """Cap nhat bar cua so dang dieu khien: ten+Lv + toa do + %.
+        """Bar cua so dang dieu khien: chi ten + Lv (bo toa do — ngan cho).
         Chi ve lai khi text thuc su khac -> het nhap nhay."""
         lv = LIVE_LEVEL[0]
-        who = f"{LIVE_NAME[0] or '?'} · Lv {lv if lv is not None else '?'}"
-        t = f"{who}  —  {fmt_live(x, y)}"
+        t = f"{LIVE_NAME[0] or '?'} · Lv {lv if lv is not None else '?'}"
         if t != _last_pos_text[0]:
             _last_pos_text[0] = t
             if bar is not None:
                 p, col = bar_pct_color(lv)
-                bar.set(p, col, t)
+                bar.set(p, col, t, active=True)
     def poll_live():
         try:
             x, y = a_pos()
@@ -2095,14 +2096,32 @@ def main():
     def log_add(text, done=False, color=None):
         root.after(0, lambda: _log_add(text, done, color))
     def _log_add(text, done, color):
-        # Khong gioi han so dong: thanh cuon (scrollbar) de xem tiep.
-        idx = logbox.size()
-        logbox.insert(tk.END, text)
-        if color:
-            logbox.itemconfig(idx, fg=color)
-        elif done:
-            logbox.itemconfig(idx, fg="green")
-        logbox.see(tk.END)
+        # Tab Log chi danh RIENG cho record reset. Log chung/debug -> hien o
+        # TIEU DE cua so (khong làm nhiễu danh sach reset).
+        try:
+            root.title("MU GOTO — " + text.strip()[:80])
+        except Exception:
+            pass
+
+    # ---- Lich su reset: tab Log chi ghi "reset thanh cong + khoang cach" ----
+    RESET_HISTORY = {}             # name -> epoch lan reset thanh cong truoc
+    def note_reset_success(name):
+        now = time.time()
+        hhmm = datetime.fromtimestamp(now).strftime("%H:%M")
+        prev = RESET_HISTORY.get(name)
+        RESET_HISTORY[name] = now
+        if prev is None:
+            span = "lần đầu"
+        else:
+            mins = (now - prev) / 60.0
+            span = f"mất {mins:.0f} phút" if mins >= 1 else f"mất {mins*60:.0f} giây"
+        line = (f"Nhân vật {name or '?'} reset thành công lúc {hhmm}, "
+                f"{span} / reset.")
+        def _w():
+            logbox.insert(tk.END, line)
+            logbox.itemconfig(logbox.size() - 1, fg=SUCCESS)
+            logbox.see(tk.END)
+        root.after(0, _w)
     # Nap hook cho log_arrive (ham CAP MODULE, khong nhin thay root/_log_add
     # cua main() → truoc day moi log kiem tra anh bi mat im lang).
     ROOT[0] = root
@@ -2232,14 +2251,15 @@ def main():
         return True
 
     def reset_stats():
-        """Chay NGAY (Train goi khi nhan vat dat Lv 400)."""
+        """Chay NGAY (Train goi khi nhan vat dat Lv 400). Tra True neu chain
+        thanh cong (khong bi dung) — de ghi vao lich su reset."""
         if RESET_ACTIVE[0]:
-            return
+            return False
         RESET_ACTIVE[0] = True
         RESET_STOP[0] = False
         set_reset_active(True)
         try:
-            _run_reset_chain()
+            return _run_reset_chain()
         finally:
             RESET_ACTIVE[0] = False
             set_reset_active(False)
