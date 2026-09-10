@@ -1096,12 +1096,15 @@ def li_type_credentials(user, pwd):
 
 
 def load_li_cfg():
-    """Doc cai dat LI: accounts, launcher_path, titles, coords, confidence."""
+    """Doc cai dat LI: accounts, launcher_path, titles, coords, confidence.
+    Lan dau chay _li_migrate_legacy de KHONG phai cai lai (giu config cu)."""
     try:
         d = json.load(open(LI_COORDS_FILE, encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
+        d = d if isinstance(d, dict) else {}
     except Exception:
-        return {}
+        d = {}
+    d = _li_migrate_legacy(d)
+    return d
 
 
 def save_li_cfg(d):
@@ -1116,6 +1119,34 @@ def save_li_cfg(d):
 def li_default_account():
     return {"user": "", "password": "", "server_index": 0,
             "char_name": "", "enabled": True}
+
+
+def _li_migrate_legacy(cfg):
+    """GIU NGUYEN config da luu truoc do: neu LI chua co gia tri cho key nao,
+    lay tu config.json cua tool MU-Login cu (co the nam canh app hoac o
+    ~/mu_login). Khong bao gio ghi de key da ton tai."""
+    for cand in (os.path.join(APP_DIR, "mu_login", "config.json"),
+                 os.path.join(os.path.expanduser("~"), "mu_login", "config.json")):
+        try:
+            d = json.load(open(cand, encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(d, dict):
+            continue
+        for key in ("launcher_path", "launcher_title", "game_title", "confidence"):
+            alt = "window_title" if key == "launcher_title" else key
+            if key not in cfg and d.get(alt):
+                cfg[key] = d[alt]
+        if "coords" not in cfg and isinstance(d.get("coords"), dict) and d["coords"]:
+            cfg["coords"] = d["coords"]
+        if "accounts" not in cfg and d.get("user"):
+            acc = {"user": d.get("user", ""), "password": d.get("password", ""),
+                   "server_index": int(d.get("server_index", 0) or 0),
+                   "char_name": d.get("char_name", ""), "enabled": True}
+            src = d.get("accounts")
+            cfg["accounts"] = src if isinstance(src, list) and src else [acc]
+        break
+    return cfg
 
 
 def li_load_accounts(cfg=None):
@@ -2223,9 +2254,6 @@ def main():
     HALF = (GAP // 2, GAP // 2)
     ROW_PADY = (0, 6)
     N_ROWS = 5
-    inner = (ctk.CTkFrame(main_col, fg_color="transparent") if USE_CTK
-             else tk.Frame(main_col, bg=BG))
-    inner.grid(row=0, column=0, sticky="nsew", padx=PAD, pady=(PAD, PAD))
 
     mv_sel = [0] * N_ROWS     # chi muc /move dang chon cua tung dong
     sp_sel = [None] * N_ROWS  # chi muc spot dang chon cua tung dong
@@ -2239,17 +2267,6 @@ def main():
     if "(Chung)" not in ROWS_MAP:
         ROWS_MAP["(Chung)"] = load_cfg()
     SPOT_ACC_KEY = ["(Chung)"]
-
-    # ---- header: dropdown chon account cho bo 5 dong duoi ----
-    spot_hdr = (ctk.CTkFrame(inner, fg_color="transparent") if USE_CTK
-                else tk.Frame(inner, bg=BG))
-    spot_hdr.pack(fill="x", pady=(0, 6))
-    label(spot_hdr, "Account:", f_small, text_color=MUTED).pack(
-        side="left", padx=(4, 6))
-    SPOT_SEL = tk.StringVar(value="(Chung)")
-    spot_combo = ttk.Combobox(spot_hdr, textvariable=SPOT_SEL, state="readonly",
-                              width=20, font=f_small, values=["(Chung)"])
-    spot_combo.pack(side="left")
 
     # Khoi phuc bo dong "(Chung)" (TRUOC khi tao card — card doc min_vars[r]).
     cfg = ROWS_MAP["(Chung)"]
@@ -2267,20 +2284,37 @@ def main():
         min_vars.append(tk.StringVar(value=""))
         max_vars.append(tk.StringVar(value=""))
 
-    # ---- 1 GRID CHINH (1 card) chua cac dong; moi dong: [Map|Spot] tren,
-    # [Min|Max] duoi, tach nhau bang ke ngang mem (khong con card roi rac). ----
-    grid_card = card(inner)
-    grid_card.pack(fill="x", padx=0, pady=0)
+    # ---- 1 GRID CHINH choán TOAN tab (bang RR/Log); dong dau = dropdown
+    # Account NAM BENCHAU grid; moi dong: [Map|Spot] tren, [Min|Max] duoi. ----
+    SPOT_SEL = tk.StringVar(value="(Chung)")
+
+    def _spot_hdr_row():
+        nonlocal spot_combo
+        hb = tk.Frame(grid_card, bg=CARD)
+        hb.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 0))
+        hb.grid_columnconfigure(0, weight=1, uniform="gH")
+        hb.grid_columnconfigure(1, weight=1, uniform="gH")
+        tk.Label(hb, text="Account", font=f_small, fg=MUTED, bg=CARD
+                 ).grid(row=0, column=0, sticky="w", padx=HALF)
+        spot_combo = ttk.Combobox(hb, textvariable=SPOT_SEL, state="readonly",
+                                  width=14, font=f_small, values=["(Chung)"])
+        spot_combo.grid(row=0, column=1, sticky="ew", padx=HALF)
+        return hb
+
+    grid_card = card(main_col)
+    grid_card.grid(row=0, column=0, sticky="nsew", padx=PAD, pady=PAD)
     grid_card.grid_columnconfigure(0, weight=1)
+    spot_combo = None
+    hdr_box = _spot_hdr_row()
     for r in range(N_ROWS):
         row_box = tk.Frame(grid_card, bg=CARD)
-        row_box.grid(row=r, column=0, sticky="ew", padx=10,
-                     pady=(8 if r == 0 else 6, 0))
+        row_box.grid(row=r + 1, column=0, sticky="ew", padx=10,
+                     pady=(6, 0))
         for c in range(2):
             row_box.grid_columnconfigure(c, weight=1, uniform=f"g{r}")
-        # row 0 = ke ngang mem (chua voi dong dau) — giu layout dong nhat
-        sep = tk.Frame(row_box, bg=BORDER if r else CARD, height=1 if r else 0)
-        sep.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        # ke ngang mem phan chia cac dong (ke ca voi dong dau)
+        tk.Frame(row_box, bg=BORDER, height=1).grid(
+            row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
         mvd = MapDropList(row_box, "Map", width=10, compact=True, btn_px=CELL_W)
         mv_drops.append(mvd)
         mvd.on_select = lambda i, r=r: pick_move(r, i)
@@ -2307,6 +2341,7 @@ def main():
         # Luu moi khi sua Min/Max (nut "+" da bo — grid tu luu).
         vmin.trace_add("write", lambda *a: persist_rows())
         vmax.trace_add("write", lambda *a: persist_rows())
+    grid_card.grid_rowconfigure(N_ROWS + 1, weight=1)
 
     def refresh_map_row(r):
         names = [t for (t, _) in MOVE_COMMANDS]
@@ -2652,11 +2687,12 @@ def main():
     # vong train; template Helper/Giam tai nam tren file (muon doi thi thay
     # file PNG tuong ung — ham capture_icon van giu lai trong code).
 
-    # ---------- TAB LOG: hang tren = 2 nut (Add Point, Camera); duoi = log ---
+    # ---------- TAB LOG: nut; nua tren = reset; nua duoi = log tien trinh ----
     log_card = card(content)
     TABS["log"] = log_card
     log_card.grid_columnconfigure(0, weight=1)
-    log_card.grid_rowconfigure(1, weight=1)
+    log_card.grid_rowconfigure(1, weight=1, uniform="logsplit")
+    log_card.grid_rowconfigure(2, weight=1, uniform="logsplit")
 
     btn_row = (ctk.CTkFrame(log_card, fg_color="transparent") if USE_CTK
                else tk.Frame(log_card, bg=CARD))
@@ -2670,16 +2706,21 @@ def main():
     btn_cam = btn_secondary(btn_row, "📷 Camera", command=open_capture_dialog)
     btn_cam.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-    logbox = tk.Listbox(
-        log_card, height=16, relief="flat", highlightthickness=0,
-        borderwidth=0, bg=CARD, fg=TEXT,
-        selectbackground=ACCENT, selectforeground="#FFFFFF",
-        font=f_body, activestyle="none")
-    logbox.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
-    def _wheel(ev):
-        logbox.yview_scroll(-1 if ev.delta > 0 else 1, "units")
-        return "break"
-    logbox.bind("<MouseWheel>", _wheel)
+    def _mk_listbox(row, pady):
+        lb = tk.Listbox(
+            log_card, relief="flat", highlightthickness=0,
+            borderwidth=0, bg=CARD, fg=TEXT,
+            selectbackground=ACCENT, selectforeground="#FFFFFF",
+            font=f_small, activestyle="none")
+        lb.grid(row=row, column=0, sticky="nsew", padx=8, pady=pady)
+        def _wheel(ev):
+            lb.yview_scroll(-1 if ev.delta > 0 else 1, "units")
+            return "break"
+        lb.bind("<MouseWheel>", _wheel)
+        return lb
+
+    logbox = _mk_listbox(1, (6, 1))        # tren: lich su reset
+    proc_box = _mk_listbox(2, (1, 8))      # duoi: log tien trinh
 
     # ---------- TAB LI: auto-login (config gear + +account + danh sach 2x5) ----
     li_card = card(content)
@@ -2700,10 +2741,28 @@ def main():
                              command=lambda: li_run_clicked())
     btn_li_run.grid(row=1, column=0, sticky="ew", padx=8, pady=(6, 0))
 
-    li_list_parent = (ctk.CTkFrame(li_card, fg_color="transparent") if USE_CTK
-                      else tk.Frame(li_card, bg=CARD))
-    li_list_parent.grid(row=2, column=0, sticky="nsew", padx=8, pady=8)
-    li_list_parent.grid_columnconfigure((0, 1), weight=1, uniform="li2col")
+    # Danh sach account: 1 dong / account, co thanh truot doc.
+    li_list_wrap = tk.Frame(li_card, bg=CARD)
+    li_list_wrap.grid(row=2, column=0, sticky="nsew", padx=8, pady=8)
+    li_list_wrap.grid_columnconfigure(0, weight=1)
+    li_list_wrap.grid_rowconfigure(0, weight=1)
+    li_canvas = tk.Canvas(li_list_wrap, bg=CARD, highlightthickness=0)
+    li_canvas.grid(row=0, column=0, sticky="nsew")
+    li_scroll = ttk.Scrollbar(li_list_wrap, orient="vertical",
+                              command=li_canvas.yview)
+    li_scroll.grid(row=0, column=1, sticky="ns")
+    li_canvas.configure(yscrollcommand=li_scroll.set)
+    li_list_parent = tk.Frame(li_canvas, bg=CARD)
+    _li_win = li_canvas.create_window((0, 0), window=li_list_parent, anchor="nw")
+    def _li_sync(_evt=None):
+        li_canvas.configure(scrollregion=li_canvas.bbox("all") or (0, 0, 0, 0))
+        li_canvas.itemconfigure(_li_win, width=li_canvas.winfo_width())
+    li_list_parent.bind("<Configure>", _li_sync)
+    def _li_wheel(ev):
+        li_canvas.yview_scroll(-1 if ev.delta > 0 else 1, "units")
+        return "break"
+    li_canvas.bind("<MouseWheel>", _li_wheel)
+    li_list_parent.bind("<MouseWheel>", _li_wheel)
 
     li_acc_rows = []      # moi: {"frame","cb","user","srv","del","data"}
 
@@ -2719,22 +2778,31 @@ def main():
 
     def li_add_row(acc=None):
         acc = acc or li_default_account()
-        col = len(li_acc_rows) % 2
-        rown = len(li_acc_rows) // 2
+        rown = len(li_acc_rows)
         box = tk.Frame(li_list_parent, bg=CARD)
-        box.grid(row=rown, column=col, sticky="nsew", padx=3, pady=2)
+        box.grid(row=rown, column=0, sticky="ew", padx=2, pady=2)
         enabled = tk.BooleanVar(value=bool(acc.get("enabled", True)))
         cb = tk.Checkbutton(box, variable=enabled, width=0)
-        cb.grid(row=0, column=0, sticky="nw")
+        cb.grid(row=0, column=0, sticky="w")
         u = tk.StringVar(value=acc.get("user", ""))
         p = tk.StringVar(value=acc.get("password", ""))
         ch = tk.StringVar(value=acc.get("char_name", ""))
         s = tk.StringVar(value=f"Server {int(acc.get('server_index', 0)) + 1}")
-        tk.Entry(box, textvariable=u, font=f_small, width=10).grid(row=0, column=1, sticky="w")
-        tk.Entry(box, textvariable=p, font=f_small, width=8, show="*").grid(row=0, column=2, sticky="w")
-        tk.Entry(box, textvariable=ch, font=f_small, width=8).grid(row=1, column=1, columnspan=2, sticky="w")
-        ttk.Combobox(box, textvariable=s, state="readonly", font=f_small, width=8,
-                     values=[f"Server {i + 1}" for i in range(5)]).grid(row=1, column=3, sticky="w")
+        tk.Entry(box, textvariable=u, font=f_small,
+                 relief="solid", bd=1).grid(row=0, column=1, sticky="ew",
+                                            padx=(2, 2))
+        tk.Entry(box, textvariable=p, font=f_small, show="*",
+                 relief="solid", bd=1).grid(row=0, column=2, sticky="ew",
+                                            padx=(0, 2))
+        tk.Entry(box, textvariable=ch, font=f_small,
+                 relief="solid", bd=1).grid(row=0, column=3, sticky="ew",
+                                           padx=(0, 2))
+        ttk.Combobox(box, textvariable=s, state="readonly", font=f_small,
+                     width=8, values=[f"Server {i + 1}" for i in range(5)]
+                     ).grid(row=0, column=4, sticky="e")
+        box.grid_columnconfigure(1, weight=1)
+        box.grid_columnconfigure(2, weight=1)
+        box.grid_columnconfigure(3, weight=1)
         rec = {"frame": box, "cb": cb, "var": enabled, "user": u,
                "password": p, "char": ch, "srv": s}
         def _on_edit(*a):
@@ -2788,10 +2856,13 @@ def main():
         add_row("Title game (regex):", "game_title", "Season21")
         coords = dict(cfg.get("coords", {}) or {})
         camfr = tk.Frame(dlg, bg=CARD); camfr.pack(fill="x", padx=10)
-        for kind, lbl in (("play", "Play"), ("credit", "Credit"), ("connect", "Connect")):
+        # Play = cua so launcher; Credit/Connect = cua so game (grab_client)
+        for kind, lbl, gf in (("play", "Play", li_grab_launcher_shot),
+                              ("credit", "Credit", None),
+                              ("connect", "Connect", None)):
             tk.Button(camfr, text=f"📷 {lbl}",
-                      command=lambda kk=kind, ll=lbl: capture_icon(
-                          li_tpl(kk), ll, grab_fn=li_grab_launcher_shot),
+                      command=lambda kk=kind, ll=lbl, g=gf: capture_icon(
+                          li_tpl(kk), ll, grab_fn=g),
                       font=f_small, relief="flat", bd=0, bg="#F2F2F7"
                       ).pack(side="left", padx=2, pady=2)
         coordfr = tk.Frame(dlg, bg=CARD); coordfr.pack(fill="x", padx=10)
@@ -2900,8 +2971,15 @@ def main():
     def log_add(text, done=False, color=None):
         root.after(0, lambda: _log_add(text, done, color))
     def _log_add(text, done, color):
-        # Tab Log chi danh RIENG cho record reset. Log chung/debug -> hien o
-        # TIEU DE cua so (khong làm nhiễu danh sach reset).
+        # Tab Log 2 phan: tren = lich su reset (chi note_reset_success ghi);
+        # duoi = log tien trinh/cac buoc de tra soat loi.
+        idx = proc_box.size()
+        proc_box.insert(tk.END, text)
+        if color:
+            proc_box.itemconfig(idx, fg=color)
+        elif done:
+            proc_box.itemconfig(idx, fg=SUCCESS)
+        proc_box.see(tk.END)
         try:
             root.title("MU GOTO — " + text.strip()[:80])
         except Exception:
