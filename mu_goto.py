@@ -1249,7 +1249,7 @@ def main():
     else:
         root = tk.Tk()
     root.title("MU GOTO")
-    root.geometry("280x620")
+    root.geometry("280x520")
     root.resizable(False, False)   # kich thuoc CO DINH -> layout on dinh
 
     # --- Theme macOS ---
@@ -1307,10 +1307,12 @@ def main():
         kw.setdefault("font", f_btn)
         if USE_CTK:
             kw.setdefault("height", 36)          # px (tk.Button: height = SO DONG!)
+            kw.setdefault("anchor", "center")
             return ctk.CTkButton(parent, text=text, corner_radius=10,
                                  fg_color=ACCENT, hover_color=ACCENT_HOVER,
                                  text_color="#FFFFFF", **kw)
         kw.pop("height", None)
+        kw.pop("anchor", None)
         return tk.Button(parent, text=text,
                          bg=ACCENT, fg="#FFFFFF", activebackground=ACCENT_HOVER,
                          activeforeground="#FFFFFF", relief="flat", bd=0, **kw)
@@ -1350,7 +1352,8 @@ def main():
                else tk.Frame(root, bg=BG))
     top_bar.grid(row=0, column=0, sticky="ew", padx=PAD, pady=(PAD, 6))
 
-    # --- Nut Train: CHAN ICON, rong ~20% cu (du 3 tab vua chieu ngang 256px) ---
+    # --- Nut Train: CHAN ICON. CTkButton can lech glyph trai — them
+    # anchor/padx trong btn_primary de ▶ nam dung giua. ---
     btn_train = btn_primary(top_bar, "▶", width=26, height=26, font=f_body,
                             command=lambda: toggle_train())
     btn_train.pack(side="left", padx=(0, 8))
@@ -1378,7 +1381,7 @@ def main():
                 b.configure(bg=ACCENT if sel else CARD,
                             fg="#FFFFFF" if sel else TEXT)
 
-    for key, txt in (("ctrl", "Acc"), ("cfg", "Config"),
+    for key, txt in (("ctrl", "RR"), ("cfg", "Spot"),
                      ("log", "Log")):
         if USE_CTK:
             b = ctk.CTkButton(top_bar, text=txt, font=f_body, height=26,
@@ -1792,28 +1795,21 @@ def main():
         min_vars.append(tk.StringVar(value=""))
         max_vars.append(tk.StringVar(value=""))
 
-    # -- 5 card nho, moi card: [Map | Spot] hang tren, [Min | Max] hang duoi --
+    # -- 5 card nho, khong nhan (bo Map/Spot/Min/Max text): [Map|Spot] tren,
+    # [Min|Max] duoi --
     for r in range(N_ROWS):
         g = card(inner)
         g.pack(fill="x", padx=2, pady=4)
         for c in range(2):
             g.grid_columnconfigure(c, weight=1, uniform=f"g{r}")
-        label(g, "Map", f_small, text_color=MUTED).grid(
-            row=0, column=0, sticky="w", padx=8, pady=(4, 0))
-        label(g, "Spot", f_small, text_color=MUTED).grid(
-            row=0, column=1, sticky="w", padx=8, pady=(4, 0))
         mvd = MapDropList(g, "Map", width=10, compact=True, btn_px=CELL_W)
         mv_drops.append(mvd)
         mvd.on_select = lambda i, r=r: pick_move(r, i)
-        mvd.head.grid(row=1, column=0, sticky="ew", padx=HALF, pady=(0, 2))
+        mvd.head.grid(row=0, column=0, sticky="ew", padx=HALF, pady=(5, 2))
         spd = MapDropList(g, "Spot", width=10, compact=True, btn_px=CELL_W)
         sp_drops.append(spd)
         spd.on_select = lambda i, r=r: pick_spot(r, i)
-        spd.head.grid(row=1, column=1, sticky="ew", padx=HALF, pady=(0, 2))
-        label(g, "Min", f_small, text_color=MUTED).grid(
-            row=2, column=0, sticky="w", padx=8)
-        label(g, "Max", f_small, text_color=MUTED).grid(
-            row=2, column=1, sticky="w", padx=8)
+        spd.head.grid(row=0, column=1, sticky="ew", padx=HALF, pady=(5, 2))
         vmin, vmax = min_vars[r], max_vars[r]
         if USE_CTK:
             e_min = ctk.CTkEntry(g, textvariable=vmin, height=26,
@@ -1827,8 +1823,8 @@ def main():
                              relief="solid", bd=1, bg="#FAFAFA", justify="center")
             e_max = tk.Entry(g, textvariable=vmax, font=f_body,
                              relief="solid", bd=1, bg="#FAFAFA", justify="center")
-        e_min.grid(row=3, column=0, sticky="ew", padx=HALF, pady=(0, 6))
-        e_max.grid(row=3, column=1, sticky="ew", padx=HALF, pady=(0, 6))
+        e_min.grid(row=1, column=0, sticky="ew", padx=HALF, pady=(0, 5))
+        e_max.grid(row=1, column=1, sticky="ew", padx=HALF, pady=(0, 5))
         # Luu moi khi sua Min/Max (nut "+" da bo — grid tu luu).
         vmin.trace_add("write", lambda *a: persist_rows())
         vmax.trace_add("write", lambda *a: persist_rows())
@@ -2032,17 +2028,33 @@ def main():
     # vong train; template Helper/Giam tai nam tren file (muon doi thi thay
     # file PNG tuong ung — ham capture_icon van giu lai trong code).
 
-    # ---------- TAB LOG: chi 1 vien ngoai, khong scrollbar, cuon lan chuot ---
+    # ---------- TAB LOG: hang tren = 2 nut (Add Point, Camera); duoi = log ---
     log_card = card(content)
     TABS["log"] = log_card
     log_card.grid_columnconfigure(0, weight=1)
-    log_card.grid_rowconfigure(0, weight=1)
+    log_card.grid_rowconfigure(1, weight=1)
+
+    btn_row = (ctk.CTkFrame(log_card, fg_color="transparent") if USE_CTK
+               else tk.Frame(log_card, bg=CARD))
+    btn_row.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
+    btn_row.grid_columnconfigure((0, 1), weight=1, uniform="btnrow")
+
+    # Nut "Add Point": gan toa do hien tai cua nhan vat vao dong Spot dau tien
+    # chua chon (het cho thi dong 1) — thay cho nut "+" da bo o tab Spot.
+    def add_point_here():
+        target = next((r for r in range(N_ROWS) if sp_sel[r] is None), 0)
+        save_spot(target)
+    btn_addp = btn_secondary(btn_row, "📍 Add Point", command=add_point_here)
+    btn_addp.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+    btn_cam = btn_secondary(btn_row, "📷 Camera", command=open_capture_dialog)
+    btn_cam.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
     logbox = tk.Listbox(
         log_card, height=16, relief="flat", highlightthickness=0,
         borderwidth=0, bg=CARD, fg=TEXT,
         selectbackground=ACCENT, selectforeground="#FFFFFF",
         font=f_body, activestyle="none")
-    logbox.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+    logbox.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
     def _wheel(ev):
         logbox.yview_scroll(-1 if ev.delta > 0 else 1, "units")
         return "break"
