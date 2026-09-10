@@ -2112,24 +2112,55 @@ def main():
     def send_chat_command(cmd):
         """Gui 1 lenh chat: Enter mo chat -> DAN tu clipboard (Ctrl+V) -> Enter gui.
 
-        3 lop an toan tranh 'copy/paste nham':
-          1) _ensure_foreground: chac chan phim/chuot dang huong DUNG vao cua so
-             game (khong phai cua so khac dang foreground).
-          2) copy xong DOC LAI clipboard, so khop chinh xac moi dan — clipboard
-             hong/thieu thi KHONG dan noi dung cu con trong bo nho.
-          3) moi phim (Enter, Ctrl+V) gui bang SCAN CODE THAT — game doc
-             DirectInput bo qua phim scan=0 (lo lenh roi cua so khac).
-        Clipboard hong hoan toan -> fallback type_unicode (SendInput unicode,
-        khong qua layout nen kh doi ky tu)."""
-        if not _ensure_foreground(ACTIVE_HWND[0]):
+        Lop an toat (vir 'paste nham noi dung khac' — vd clipboard chua ten
+        repo tu trinh duyet):
+          1) BAT BUOC phai co cua so game that (ACTIVE_HWND hoac focus_game
+             tim duoc CUA SO MOI). Khong co → HOAN lenh. (_ensure_foreground
+             hwnd=None truoc day tra True duong doi — phim roi vao cua so
+             foreground khac = trinh duyet/banner khac, paste ra noi dung
+             sai. Do la nguyen nhan 'paste Auto-MU-SS21'.)
+          2) Gui phim bang SCAN CODE THAT (game DirectInput bo qua scan=0).
+          3) Sau khi copy: doc lai clipboard; THAT SAT TRUONG CTRL+V doc lan
+             cuoi — clipboard bi app khac ghi dep (clipboard sync/history)
+             trong khoang trong thi COPY LAI, toi da 3 lan.
+          4) Clipboard kh the tin cay → fallback type_unicode (SendInput
+             unicode truc tiep, khong dung clipboard nen kh the sai noi dung).
+        Sau khi dan: doc lai lan cuoi, neu khong khop thi ghi LOG phan tich."""
+        wh = ACTIVE_HWND[0] or focus_game()
+        if not wh or not user32.IsWindow(wh):
+            log_add("  lenh: chua co cua so game dang mo — HOAN gui lenh "
+                    "(mo game / chon cua so o tab Account truoc).")
+            return False
+        if not _ensure_foreground(wh):
             log_add("  lenh: khong focus duoc cua so game — HOAN gui lenh.")
             return False
         time.sleep(0.10)
         _tap_vk(0x0D); time.sleep(0.25)             # Enter mo khung chat
-        ok_clip = copy_to_clipboard(cmd) and read_clipboard() == cmd
-        if ok_clip:
+        if user32.GetForegroundWindow() != wh:
+            log_add("  lenh: cua so game bi mat focus khi mo chat — "
+                    "khong dan, chuyen go truc tiep.")
+            type_unicode(cmd)
+            time.sleep(0.15)
+            _tap_vk(0x0D); time.sleep(0.15)
+            return True
+        # 3 lan: copy -> verify -> (kiem tra lai focus) -> verify NGAY -> dan
+        pasted = False
+        for _ in range(3):
+            if not copy_to_clipboard(cmd):
+                time.sleep(0.1)
+                continue
+            if read_clipboard() != cmd or user32.GetForegroundWindow() != wh:
+                time.sleep(0.1)
+                continue
+            if read_clipboard() != cmd:             # doc lan cuoi sat gio dan
+                continue
             paste_clipboard()
-        else:
+            pasted = True
+            if read_clipboard() != cmd:
+                log_add(f"  [canh bao] clipboard BI GIAO DICH sau khi dan — "
+                        f"noi dung dan ra co the sai (lenh: {cmd!r})")
+            break
+        if not pasted:
             log_add("  clipboard kh xac minh duoc -> go truc tiep (SendInput)")
             type_unicode(cmd)
         time.sleep(0.15)
