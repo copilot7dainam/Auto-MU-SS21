@@ -663,6 +663,24 @@ def _window_at(x, y):
         return None
 
 
+def _fg_is_ok(hwnd):
+    """True neu foreground LA hwnd hoac cua so cung PROCESS cua no.
+    (Khi mo o chat, MU/Windows IME tao cua so con cung pid game →
+    GetForegroundWindow() != hwnd_game Nhung phim VAN toi dung game. So sanh
+    strict == truoc day bao 'mat focus' GIA → lenh bi HOAN, paste khong chay.)"""
+    fg = user32.GetForegroundWindow()
+    if not fg:
+        return False
+    if fg == hwnd:
+        return True
+    try:
+        p1 = wt.DWORD(); p2 = wt.DWORD()
+        user32.GetWindowThreadProcessId(fg, ctypes.byref(p1))
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(p2))
+        return p1.value != 0 and p1.value == p2.value
+    except Exception:
+        return False
+
 def guard_foreground(hwnd, what=""):
     """TRUOC moi thao tac phim/chuot: neu cua so hwnd KHONG con la
     foreground → lap tuc SetForegroundWindow/BringWindowToTop lai (focus_game)
@@ -671,7 +689,7 @@ def guard_foreground(hwnd, what=""):
     if not hwnd or not user32.IsWindow(hwnd):
         return False
     for _ in range(3):
-        if user32.GetForegroundWindow() == hwnd:
+        if _fg_is_ok(hwnd):
             return True
         focus_game(hwnd)
         time.sleep(0.10)
@@ -984,6 +1002,12 @@ def li_find_windows(pattern):
 
 
 def _rect_area(hwnd):
+    # MINIMIZE: GetWindowRect tra ve gia tri sentinel (-32000...) → dien tich
+    # "khong lo" 16000x16000. Tinh no = 0 de li_pick_window KHONG ba o chon
+    # cua so minimize khi co cua so khac dang hien (van duoc chon khi TOAN BO
+    # danh sach deu minimize — B1 can tim launcher minimize de restore).
+    if user32.IsIconic(hwnd):
+        return 0
     r = wt.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(r))
     return (r.right - r.left) * (r.bottom - r.top)
@@ -1057,13 +1081,18 @@ def li_minimize(hwnd):
 
 def li_grab_hwnd(hwnd):
     """Chup toan bo vung cua so hwnd (ke ca khong phai main.exe) -> PIL.Image
-    RGB. Dung cho launcher (Play now). None neu hong."""
+    RGB. Dung cho launcher (Play now). None neu hong.
+    Restore NEU MINIMIZE: GetWindowRect cua an = (-32000,-32000)+16000 →
+    grab bbox ngoai man hinh → anh DEN/loi (nguyen nhan hong nut 📷/◎)."""
     try:
         from PIL import ImageGrab
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)         # SW_RESTORE
+            time.sleep(0.4)
         r = wt.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(r))
         W, H = r.right - r.left, r.bottom - r.top
-        if W < 8 or H < 8:
+        if W < 8 or H < 8 or r.left <= -30000:
             return None
         try:
             if user32.GetForegroundWindow() != hwnd:
@@ -1157,23 +1186,18 @@ def li_wait_img_present(hwnd, key, timeout=LI_IMG_TIMEOUT):
 
 
 def li_type_credentials(user, pwd):
-    """Clipboard paste: user -> Tab -> pass -> Enter. Xac minh clipboard
-    truoc khi dan (nhu send_chat_command)."""
-    def _paste(text):
-        for _ in range(3):
-            if copy_to_clipboard(text) and read_clipboard() == text:
-                paste_clipboard()
-                return
-            time.sleep(0.1)
-        type_unicode(text)          # fallback khong dung clipboard
+    """user → Tab → pass → Enter. GO TUNG PHIM THAT (vk+scan, nhu ban tay go)
+    — KHONG dung clipboard: lan dau paste mat khau vao o pass, client MU LUU
+    CHUOI DO VINH VIEN va moi Ctrl+V sau (o chat) dan ra gia tri CU nay, bat
+    chap clipboard hien tai. Khong copy gi ca → khong con gi de no cache."""
     _ensure_foreground(ACTIVE_HWND[0])
-    time.sleep(0.2)
-    _paste(user)
-    time.sleep(1.0)
+    time.sleep(0.3)
+    type_keys(user)
+    time.sleep(0.6)
     _tap_vk(0x09)                   # VK_TAB (scan code that)
-    time.sleep(1.0)
-    _paste(pwd)
-    time.sleep(1.0)
+    time.sleep(0.6)
+    type_keys(pwd)
+    time.sleep(0.6)
     _tap_vk(0x0D)                   # VK_RETURN gui dang nhap
 
 
@@ -1417,7 +1441,40 @@ _cf.GetClipboardData.restype = ctypes.c_void_p
 _cf.GetClipboardData.argtypes = [wt.UINT]
 _cf.IsClipboardFormatAvailable.restype = wt.BOOL
 _cf.IsClipboardFormatAvailable.argtypes = [wt.UINT]
+_cf.GetClipboardSequenceNumber.restype = wt.DWORD
 CF_UNICODETEXT = 13
+
+# --- Go ky tu bang PHIM THAT (vk + scan code) — duong duy nhat MU khong chan ---
+user32.VkKeyScanW.restype = ctypes.c_short
+user32.VkKeyScanW.argtypes = [wt.WCHAR]
+
+def _tap_char(ch):
+    """Bam 1 ky tu nhu nguoi dung: VkKeyScanW → vk + modifier (Shift cho
+    hoa/ky tu dac biet), scan code that qua keybd_event. False neu layout
+    khong map duoc ky tu."""
+    u = user32.VkKeyScanW(ch)
+    if u == -1 or (u & 0x100):           # -1: khong map; bit Ctrl: lo
+        return False
+    vk = u & 0xFF
+    mods = []
+    if u & 0x200: mods.append(0x10)      # VK_SHIFT
+    if u & 0x400: mods.append(0x12)      # VK_MENU (AltGr)
+    for m in mods:
+        user32.keybd_event(m, user32.MapVirtualKeyW(m, 0), 0, 0)
+    _tap_vk(vk)
+    for m in reversed(mods):
+        user32.keybd_event(m, user32.MapVirtualKeyW(m, 0), 0x0002, 0)
+    return True
+
+def type_keys(text):
+    """Ca chuoi = tung _tap_char; ky tu layout kh map → SendInput unicode
+    (hi hi: chu VN). Tra True neu toan bo duoc go."""
+    for ch in text:
+        if not _tap_char(ch):
+            if not type_unicode(ch):
+                return False
+        time.sleep(0.03)
+    return True
 
 
 def copy_to_clipboard(text):
@@ -1496,6 +1553,14 @@ def paste_clipboard():
     time.sleep(0.04)
     _release_vk(VK_CONTROL)
     time.sleep(0.04)
+
+# --- G_ui text: MAC DINH SendInput unicode, KHONG dung clipboard ---
+#clipboard bi "ket" (dan ra noi dung cu du da copy khac): trinh quan ly
+#clipboard / Windows 11 history (Win+V) / app dong bo clipboard (TeamViewer,
+#Logitech Options, Dropbox...) giat WM_CLIPBOARDUPDATE va RENDERFORMAT tre —
+#no cache gia tri DAU TIEN va ghi de moi lan ta Set → Ctrl+V trong game luon
+#ra NOI DUNG CU. type_unicode (KEYEVENTF_UNICODE) khong cham clipboard →
+#kh the bi trung choan (mo rong BMP ky tu an toan).
 
 
 # --- SendInput unicode: go dung tung ky tu, khong phu thuoc layout ban phim ---
@@ -1730,7 +1795,16 @@ def li_run_account(acc, cfg, log, deadline=None):
     else:
         log(f"  [LI] {acc['user']}: chua thay title nhan vat — van thu bat Giam tai")
 
-    # B10b: → BAT GIAM TAI cho cua so nay (verify hinh, toi da 10 lan)
+    # B10b: BAT HELPER truoc (Home) — verify bang anh Helper, nhan lai toi khi
+    # thay (cung co che train chain dung). CHUA Helper → KHONG bat Giam tai.
+    _ensure_foreground(g)
+    if send_home_verified(g):
+        log(f"  [LI] {acc['user']}: Helper BAT (icon thay) → tiep Giam tai")
+    else:
+        log(f"  [LI] {acc['user']}: Helper CHUA bat duoc (PgUp?) → bo buoc Giam tai")
+        return (True, g)
+
+    # B10c: → BAT GIAM TAI cho cua so nay (verify hinh, toi da 10 lan)
     _ensure_foreground(g)
     if send_ctrl_f_on(g):
         log(f"  [LI] {acc['user']}: ✔ DA VAT Giam tai (icon xuat hien)")
@@ -1747,6 +1821,17 @@ def li_run_all(cfg, accounts, log, on_done=None):
     try:
         enabled = [a for a in accounts if a.get("user") and a.get("enabled", True)]
         for i, acc in enumerate(enabled, 1):
+            u = acc["user"]
+            # DA DANG NHAP (bind cua so con song, o tren the gioi) → BO QUA,
+            # KHONG mo cua so login nua. Watchdog van canh neu cua so chet.
+            hwnd_b = LI_BINDINGS.get(u)
+            if hwnd_b and user32.IsWindow(hwnd_b):
+                nm_b, _lv = read_title(hwnd_b)
+                if nm_b:                      # co [Char:] = da in-game that
+                    log(f"===== LI {i}/{len(enabled)}: {u} — Bỏ qua "
+                        f"(dang trong world: {nm_b}) =====")
+                    ok_n += 1
+                    continue
             log(f"===== LI {i}/{len(enabled)}: {acc['user']} (S{int(acc['server_index'])+1}) =====")
             attempt = 0
             # MOI LAN THU co deadline 5 phut (LI_TOTAL_TIMEOUT) trong
@@ -2112,40 +2197,35 @@ def main():
                   ).pack(padx=14, pady=(6, 12), anchor="e")
         center_on_root(dlg)
 
-    # ---------- TAB 1: DIEU KHIEN (chi chua cac thanh tien trinh) ----------
-    tab_ctrl = card(content)
-    TABS["ctrl"] = tab_ctrl
-    sidebar = tab_ctrl
-
-    # --- Thanh tien trinh DINH: 1 bar / 1 cua so game, hinh giong nut Train ---
-    # SLOT CO DINH: 10 hang o dinh vi tri khong doi; cua so moi vao cho trong
-    # dau tien, cua so dong thi cho trong do an di — cac bar khac khong dich.
-    # Dau moi bar chừa 6-8px; cua so dang duyet: CHAM DO o dau bar (bo vien
-    # xanh cu). Trong bar: ten nhan vat + Lv (bo map + toa do — khong du cho).
-    bars_frame = (ctk.CTkFrame(sidebar, fg_color="transparent")
-                  if USE_CTK else tk.Frame(sidebar, bg="#FFFFFF"))
-    # pady tren = PAD (12) de bar lur xuong bang khoang cach bar->le phai.
-    bars_frame.pack(fill="x", padx=PAD, pady=(PAD, 6))
+    # ---------- TAB 1: RR — HET NHU TAB LI: pill #F2F2F7, cham dau XUONG ----------
+    # (xanh = cua so con song; DO = cua so dang duyet. Trong pill: bar tien
+    # trinh (fill xanh/da) + chu DEN "Ten · Lv". Grid/kich thuoc/cach le =
+    # cong thuc giong LI: slot expand deu, pill cap = grid/5.)
+    rr_card = card(content)
+    TABS["ctrl"] = rr_card
+    rr_card.grid_columnconfigure(0, weight=1)
+    rr_card.grid_rowconfigure(0, weight=1)
+    bars_frame = tk.Frame(rr_card, bg=CARD)
+    bars_frame.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
     MAX_SLOTS = 10
     BAR_H = 22
     BAR_R = 10
-    BAR_GAP = 16         # khoang dau bar (chua cham do) — du de dot o GIUA
+    PILL = "#F2F2F7"
     DOT_RED = "#FF3B30"
+    DOT_GREEN = "#34C759"
 
     class Bar:
-        """Bar bo goc kieu nut Train: track xam nhat + fill mau + text trang.
-        active=True -> ve CHAM DO o dau (cua so dang duyet)."""
+        """Canvas bar trong pill: track tron #E9E9EE + fill theo Lv + chu DEN."""
         def __init__(self, parent):
-            self.h = BAR_H
             self.r = BAR_R
-            self.c = tk.Canvas(parent, width=100, height=self.h,
-                               highlightthickness=0, bg="#FFFFFF")
-            self.c.pack(fill="x")
+            self._full_h = BAR_H
+            self.c = tk.Canvas(parent, width=100, height=self._full_h,
+                               highlightthickness=0, bg=PILL)
+            self.c.pack(side="left", fill="both", expand=True)
             self._w = 100
             self._pct = 0.0
             self._color = SUCCESS
             self._text = ""
-            self._active = False
             self.c.bind("<Configure>", self._resize)
             self._draw()
 
@@ -2162,45 +2242,52 @@ def main():
 
         def _draw(self):
             self.c.delete("all")
-            w, h, r = self._w, self.h, self.r
-            # cham do nam GIUA khoang tu vien trai -> diem dau bar (BAR_GAP)
-            if self._active:
-                d = 7
-                cx = BAR_GAP / 2.0
-                self.c.create_oval(cx - d / 2.0, (h - d) / 2.0,
-                                   cx + d / 2.0, (h + d) / 2.0,
-                                   outline="", fill=DOT_RED)
-            x0 = BAR_GAP
-            tw = max(0, w - x0)
-            self._rrect(x0, 0, x0 + tw, h, r, "#E9E9EE")
-            fw = int(tw * self._pct)
+            w, h = self._w, self._full_h
+            r = min(self.r, h // 2)
+            self._rrect(0, 0, w, h, r, "#E9E9EE")
+            fw = int(w * self._pct)
             if fw > 2 * r:
-                self._rrect(x0, 0, x0 + fw, h, r, self._color)
+                self._rrect(0, 0, fw, h, r, self._color)
             elif fw > 0:
-                self.c.create_rectangle(x0, 0, x0 + fw, h, fill=self._color,
+                self.c.create_rectangle(0, 0, fw, h, fill=self._color,
                                         outline="")
             if self._text:
-                self.c.create_text(x0 + 8, h / 2.0, anchor="w", text=self._text,
-                                   font=f_bar, fill="#FFFFFF")
+                self.c.create_text(8, h / 2.0, anchor="w", text=self._text,
+                                   font=f_bar, fill=TEXT)
 
         def set(self, p, color, text=None, active=None):
             self._pct = max(0.0, min(1.0, p))
             self._color = color
             if text is not None:
                 self._text = text
-            if active is not None:
-                self._active = bool(active)
             self._draw()
 
-        def clear(self):
-            self.set(0.0, SUCCESS, "", active=False)
+        def set_h(self, h):
+            h = max(BAR_H, int(h))
+            if h != self._full_h:
+                self._full_h = h
+                self.c.configure(height=h)
+                self._draw()
 
-    # Tao truoc MAX_SLOTS hang dinh vi tri (khong bao gio doi thu tu).
+        def clear(self):
+            self.set(0.0, SUCCESS, "")
+
+    # Holder = slot deu (expand); trong holder: spacer tren/duoi weight →
+    # PILL nam giua, khoang cach gia cac pill DAU NHAU — y het LI.
     SLOTS = []
     for _i in range(MAX_SLOTS):
-        holder = tk.Frame(bars_frame, bg="#FFFFFF")
-        holder.pack(fill="x", pady=3)
-        SLOTS.append({"frame": holder, "bar": Bar(holder), "hwnd": None})
+        holder = tk.Frame(bars_frame, bg=CARD)
+        holder.pack(fill="both", expand=True)
+        tk.Frame(holder, bg=CARD).pack(fill="both", expand=True)
+        box = tk.Frame(holder, bg=PILL)
+        box.pack(fill="x", padx=2)
+        dot = tk.Label(box, text="", font=f_bar, fg=DOT_GREEN, bg=PILL,
+                       width=2)
+        dot.pack(side="left")
+        b = Bar(box)
+        tk.Frame(holder, bg=CARD).pack(fill="both", expand=True)
+        SLOTS.append({"frame": holder, "box": box, "bar": b, "dot": dot,
+                      "hwnd": None})
 
     def _slot_release(sl):
         sl["hwnd"] = None
@@ -2268,22 +2355,34 @@ def main():
                 _slot_assign(hwnd)
         BARS.clear()
         bar = cur = None
+        n_vis = sum(1 for sl in SLOTS if sl["hwnd"] is not None)
+        fh = bars_frame.winfo_height()
+        # bar = min(slot - khe 10px, grid/5): khe GIA card LUON con ≥10px khi
+        # ≤5 cua so; >5 cua so → bar ep min 22px (khe tu hep).
+        if n_vis and fh > 60:
+            slot_h = fh // n_vis
+            bar_h = max(BAR_H, min(slot_h - 10, fh // 5))
+            for sl in SLOTS:
+                if sl["hwnd"] is not None:
+                    sl["bar"].set_h(bar_h)
         for sl in SLOTS:
             hwnd = sl["hwnd"]
+            active = (hwnd == ACTIVE_HWND[0]) and hwnd is not None
+            # cham dau PILL: DO = dang duyet, XANH = cua so song chua duyet
+            # (giong cham xanh o tab LI; an khi pill trong)
             if hwnd is None:
+                sl["dot"].configure(text="")
                 continue
+            sl["dot"].configure(text="●",
+                                fg=DOT_RED if active else DOT_GREEN)
             BARS[hwnd] = sl["bar"]
             nm, lv = read_title(hwnd)
             p, col = bar_pct_color(lv)
             txt = f"{nm or '?'} · Lv {lv if lv is not None else '?'}"
-            active = (hwnd == ACTIVE_HWND[0])
             if active:
                 bar, cur = sl["bar"], sl["bar"].c
-            # cham do = cua so dang duyet; bo vien xanh cu
-            sl["bar"].set(p, col, txt, active=active)
-        # an hang trong o CUOI; thu tich o giua van giu choang dung cho.
-        # Pack theo THU TU NGUOC (9->0) de slot 0 luon o dau: pack() noi chung
-        # day widget xuong cuoi, goc nguoc thi thu tu cuoi cung = 0,1,2...
+            sl["bar"].set(p, col, txt)
+        # an hang trong o CUOI; slot o giua giu nguyen cho trong (khong dot).
         last_used = -1
         for i, sl in enumerate(SLOTS):
             if sl["hwnd"] is not None:
@@ -2291,21 +2390,46 @@ def main():
         for i in reversed(range(MAX_SLOTS)):
             sl = SLOTS[i]
             if i <= last_used:
-                sl["frame"].pack(fill="x", pady=3)
+                sl["frame"].pack(fill="both", expand=True)
             else:
                 sl["frame"].pack_forget()
-        li_idle_watch(wins)   # khong Train: tu dong relogin cua so mat
+        li_idle_watch(wins)   # khong Train: quet BIND + tu dong relogin cua so mat
+        li_refresh_bind_colors()   # nen xanh = user dang gan cua so song
         root.after(2000, sync_bars)
 
     def li_idle_watch(wins):
-        """Ngoai Train (sync_bars goi): account da bind ma cua so mat →
-        spawn worker relogin (thread rieng, khong lam dong bang tk).
-        Co cheque LI_BUSY/TRAIN_ACTIVE de khong bao gio cham ban phim
-        cung luc voi Train hay login thu cong."""
-        if LI_BUSY[0] or TRAIN_ACTIVE[0] or not LI_BINDINGS:
+        """Ngoai Train (sync_bars goi 2s/lan — DONG THOI la luong QUET BIND
+        LUC MO TOOL): cua so game trung ten nhan vat voi username/char_name
+        → TU DAT ket noi (bind) user do → nen xanh o tab LI + watchdog bat
+        dau canh. Account da bind ma cua so mat → spawn worker relogin
+        (thread rieng, khong lam dong bang tk). Co cheque LI_BUSY/TRAIN_ACTIVE
+        de khong bao gio cham ban phim cung luc voi Train hay login thu cong."""
+        if LI_BUSY[0] or TRAIN_ACTIVE[0]:
             return
         now = time.time()
         alive = set(wins.keys())
+        # 1) QUET BIND: cua so chua bind nao, title [Char:] khop user/char_name
+        for hwnd in alive:
+            nm, _lv = read_title(hwnd)
+            if not nm:
+                continue
+            bound_hwnds = set(LI_BINDINGS.values())
+            if hwnd in bound_hwnds:
+                continue
+            for a in li_snapshot_accounts():
+                cn = (a.get("char_name") or "").strip()
+                u = a.get("user") or ""
+                if not u or u in LI_BINDINGS:
+                    continue
+                if not a.get("enabled", True):
+                    continue
+                if cn.lower() == nm.strip().lower() or u.lower() == nm.strip().lower():
+                    LI_BINDINGS[u] = hwnd
+                    log_add(f"  🔗 {u}: gan cua so game '{nm}' — watchdog bat dau")
+                    break
+        # 2) account da tung bind ma cua so bien mat → relogin (KHONG pop o
+        # day — guLI_BINDINGS cho toi khi worker relogin xong hoac het buoc;
+        # nen xanh tu tat vi IsWindow=False trong li_refresh_bind_colors)
         for u, hwnd in list(LI_BINDINGS.items()):
             if hwnd in alive:
                 continue
@@ -2443,13 +2567,15 @@ def main():
         nonlocal spot_combo
         hb = tk.Frame(grid_card, bg=CARD)
         hb.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 0))
-        hb.grid_columnconfigure(0, weight=1, uniform="gH")
-        hb.grid_columnconfigure(1, weight=1, uniform="gH")
-        tk.Label(hb, text="Account", font=f_small, fg=MUTED, bg=CARD
-                 ).grid(row=0, column=0, sticky="w", padx=HALF)
+        hb.grid_columnconfigure(0, weight=1)
+        # khong con text "Account" — dropdown CHIEM HET chieu ngang, cao
+        # bang nut Map (font body + ipady), NOI DUNG CAN GIUA (justify) nhu
+        # nut Map cua CTkButton.
         spot_combo = ttk.Combobox(hb, textvariable=SPOT_SEL, state="readonly",
-                                  width=14, font=f_small, values=["(Chung)"])
-        spot_combo.grid(row=0, column=1, sticky="ew", padx=HALF)
+                                  font=f_body, justify="center",
+                                  values=["(Chung)"])
+        spot_combo.grid(row=0, column=0, sticky="ew", padx=HALF, pady=(0, 2),
+                        ipady=3)
         return hb
 
     grid_card = card(content)
@@ -2632,13 +2758,16 @@ def main():
 
     TRAIN_ACTIVE = [False]
     def acc_key_for_name(nm):
-        """(char_name -> account key) cho dropdown Spot; khong co thi '(Chung)'."""
+        """(char_name/username -> account key) cho dropdown Spot + bind.
+        Khong co thi '(Chung)'."""
         if not nm:
             return "(Chung)"
         try:
             for a in li_snapshot_accounts():
                 cn = (a.get("char_name") or "").strip()
-                if cn and cn.lower() == nm.strip().lower():
+                us = (a.get("user") or "").strip()
+                if (cn and cn.lower() == nm.strip().lower()) or \
+                        (us and us.lower() == nm.strip().lower()):
                     return a["user"] or "(Chung)"
         except Exception:
             pass
@@ -2711,8 +2840,14 @@ def main():
         Lv dat nguong -> Reset -> spot dong 1. PgUp = dung tat ca."""
         if TRAIN_ACTIVE[0] or running[0]:
             return
-        # can it least one usable bo dong (Chung) hoac bat ky account nao
-        any_rows = build_rows(ROWS_MAP.get("(Chung)") or load_cfg())
+        # Can it least one usable bo dong — QUET MỌI key: "(Chung)" va cua
+        # account rieng (user dien trong dropdown Spot → luu vao ROWS_MAP[user],
+        # "(Chung)" van trong → truoc day bao LO "chưa có dòng").
+        any_rows = []
+        for key in ROWS_MAP:
+            any_rows = build_rows(ROWS_MAP[key])
+            if any_rows:
+                break
         if not any_rows:
             set_status("Chưa có dòng hợp lệ (cần chọn spot + nhập Lv Min/Max)")
             return
@@ -2987,22 +3122,84 @@ def main():
             li_persist()
             li_render_accounts()
 
+    LI_ROW_WIDGETS = {}    # user -> (box, lbl) de doi mau khi bind song
+    LI_ROW_H = [-1]        # extra pady hien tai cua hang account (-1 = chua lay)
+    LI_HOLDERS = []        # (holder, spacer_top, box, spacer_bot) theo thu tu
+
     def li_render_accounts():
         for w in li_list_parent.winfo_children():
             w.destroy()
+        LI_ROW_WIDGETS.clear()
+        LI_HOLDERS.clear()
+        LI_ROW_H[0] = -1     # hang moi render → buoc layout ap chieu cao lai
         for i, a in enumerate(li_accounts):
-            box = tk.Frame(li_list_parent, bg="#F2F2F7")
-            box.grid(row=i, column=0, sticky="ew", padx=2, pady=2)
+            # holder CHIEM SLOT DEU (expand), box LE co chen 2 spacer → box
+            # duoc = min(slot, grid/5) nam GIUA slot: it account → khoang
+            # trong chia deu tren/duoi, nhieu → ken kin (o tab RR cung cach).
+            holder = tk.Frame(li_list_parent, bg="#F2F2F7")
+            holder.pack(fill="both", expand=True)
+            top = tk.Frame(holder, bg=CARD); top.pack(fill="both", expand=True)
+            box = tk.Frame(holder, bg="#F2F2F7")
+            box.pack(fill="x", expand=False, padx=2, pady=1)
+            bot = tk.Frame(holder, bg=CARD); bot.pack(fill="both", expand=True)
             dot = "●" if a.get("enabled", True) else "○"
             col = "#34C759" if a.get("enabled", True) else MUTED
-            tk.Label(box, text=dot, font=f_small, fg=col, bg="#F2F2F7"
-                     ).pack(side="left", padx=(6, 0))
+            dl = tk.Label(box, text=dot, font=f_small, fg=col, bg="#F2F2F7")
+            dl.pack(side="left", padx=(6, 0))
             lbl = tk.Label(box, text=a.get("user") or "(trống)", font=f_body,
                            fg=TEXT, bg="#F2F2F7", anchor="w")
-            lbl.pack(side="left", fill="x", expand=True, padx=6, ipady=3)
+            lbl.pack(side="left", fill="x", expand=True, padx=6,
+                     pady=(3 + max(0, (li_row_height() - 26) // 2),
+                           3 + max(0, (li_row_height() - 26) // 2)))
             for wdg in (box, lbl):
                 wdg.bind("<Button-1>", lambda _e, k=i: li_edit_account(k))
                 wdg.configure(cursor="hand2")
+            LI_ROW_WIDGETS[a.get("user")] = (box, lbl)
+            LI_HOLDERS.append((holder, top, box, bot))
+        li_refresh_bind_colors()
+        root.after(50, li_layout_rows)   # sau khi card ep layout xong
+
+    def li_row_height():
+        """Cao pill tai khoan = min(slot, card/5) — it tai khoan → pill CAO
+        dan toi DAU card/5 (spacer 2 dau chia het phan con), nhieu → pill
+        tu co lai. slot = card / so_hang."""
+        try:
+            h = li_list_parent.winfo_height()
+        except Exception:
+            h = 0
+        n = max(1, len(LI_HOLDERS))
+        slot = h // n if h > 50 else 26
+        return max(26, min(slot, h // 5 if h > 50 else 26))
+
+    def li_layout_rows():
+        """Ap chieu cao moi (pady lbl → pill duoc nang) khi card/so hang doi.
+        Chi re-pack khi gia tri THAY DOI — khong chop 2s/lan."""
+        extra = max(0, (li_row_height() - 26) // 2)
+        if extra == LI_ROW_H[0]:
+            return
+        LI_ROW_H[0] = extra
+        for _holder, _top, box, _bot in LI_HOLDERS:
+            labels = [w for w in box.winfo_children()
+                      if isinstance(w, tk.Label)]
+            for lbl in labels[1:]:          # [0] = cot dot, giu nguyen
+                try:
+                    lbl.pack_forget()
+                    lbl.pack(side="left", fill="x", expand=True, padx=6,
+                             pady=(3 + extra, 3 + extra))
+                except Exception:
+                    pass
+
+    def li_refresh_bind_colors():
+        """Nen XANH LA = user dang gan (bind) voi cua so game con song."""
+        for u, (box, lbl) in LI_ROW_WIDGETS.items():
+            bound = (u in LI_BINDINGS and user32.IsWindow(LI_BINDINGS[u]))
+            bg = "#D1F2DB" if bound else "#F2F2F7"
+            try:
+                for c in (box, lbl) + tuple(box.winfo_children()):
+                    c.configure(bg=bg)
+            except Exception:
+                pass
+        li_layout_rows()   # so hang / chieu cao card co the doi — gian lai
 
     def li_open_config():
         dlg = tk.Toplevel(root)
@@ -3257,56 +3454,49 @@ def main():
         raise ValueError("Chua chon spot va chua doc duoc vi tri")
 
     def send_chat_command(cmd):
-        """Gui 1 lenh chat: Enter mo chat -> DAN tu clipboard (Ctrl+V) -> Enter gui.
+        """Gui 1 lenh chat: Enter mo chat → COPY lenh vao clipboard → doc lai
+        xac minh DUNG → Ctrl+V → Enter gui (toi da 3 lan copy→verify→dan).
 
-        Lop an toat (vir 'paste nham noi dung khac' — vd clipboard chua ten
-        repo tu trinh duyet):
-          1) BAT BUOC phai co cua so game that (ACTIVE_HWND hoac focus_game
-             tim duoc CUA SO MOI). Khong co → HOAN lenh. (_ensure_foreground
-             hwnd=None truoc day tra True duong doi — phim roi vao cua so
-             foreground khac = trinh duyet/banner khac, paste ra noi dung
-             sai. Do la nguyen nhan 'paste Auto-MU-SS21'.)
-          2) Gui phim bang SCAN CODE THAT (game DirectInput bo qua scan=0).
-          3) Sau khi copy: doc lai clipboard; THAT SAT TRUONG CTRL+V doc lan
-             cuoi — clipboard bi app khac ghi dep (clipboard sync/history)
-             trong khoang trong thi COPY LAI, toi da 3 lan.
-          4) Clipboard kh the tin cay → fallback type_unicode (SendInput
-             unicode truc tiep, khong dung clipboard nen kh the sai noi dung).
-        Sau khi dan: doc lai lan cuoi, neu khong khop thi ghi LOG phan tich."""
+        Clipboard NAY SACH mat khau: login da chuyen sang go tung phim (khong
+        copy user/pass) → client MU khong con gia tri cache de 'mieu' Ctrl+V.
+        Moi lenh tu copy lai tu dau, verify clipboard THAT SU mang dung lenh
+        truoc khi dan."""
         wh = ACTIVE_HWND[0] or focus_game()
         if not wh or not user32.IsWindow(wh):
             log_add("  lenh: chua co cua so game dang mo — HOAN gui lenh "
-                    "(mo game / chon cua so o tab Account truoc).")
+                    "(mo game roi thao tac).")
             return False
         if not guard_foreground(wh, "lenh"):
             log_add("  lenh: khong focus duoc cua so game — HOAN gui lenh.")
             return False
         time.sleep(0.10)
-        _tap_vk(0x0D); time.sleep(0.25)             # Enter mo khung chat
+        _tap_vk(0x0D); time.sleep(0.30)             # Enter mo khung chat
         if not guard_foreground(wh, "lenh/sau-enter"):
-            log_add("  lenh: mat focus khi mo chat — HOAN gui lenh "
-                    "(khong dan/go vao cua so khac).")
+            log_add("  lenh: mat focus khi mo chat — HOAN gui lenh.")
             return False
-        # 3 lan: copy -> verify -> (giu focus) -> verify NGAY -> dan
-        pasted = False
-        for _ in range(3):
-            if not copy_to_clipboard(cmd):
-                time.sleep(0.1)
-                continue
-            if read_clipboard() != cmd or not guard_foreground(wh, "lenh/truoc-dan"):
-                time.sleep(0.1)
-                continue
-            if read_clipboard() != cmd:             # doc lan cuoi sat gio dan
-                continue
-            paste_clipboard()
-            pasted = True
-            if read_clipboard() != cmd:
-                log_add(f"  [canh bao] clipboard BI GIAO DICH sau khi dan — "
-                        f"noi dung dan ra co the sai (lenh: {cmd!r})")
-            break
-        if not pasted and guard_foreground(wh, "lenh/fallback"):
-            log_add("  clipboard kh xac minh duoc -> go truc tiep (SendInput)")
-            type_unicode(cmd)
+
+        def _paste(text):
+            for k in range(3):
+                _ensure_foreground(wh)
+                if not copy_to_clipboard(text):
+                    log_add(f"  lenh: copy THAT BAI lan {k+1} (clipboard bi chan)")
+                    time.sleep(0.15)
+                    continue
+                time.sleep(0.05)
+                if read_clipboard() != text:        # app khac ghi de → copy lai
+                    log_add(f"  lenh: clipboard bi GHI DE lan {k+1} → copy lai")
+                    time.sleep(0.15)
+                    continue
+                if not guard_foreground(wh, "lenh/truoc-dan"):
+                    time.sleep(0.15)
+                    continue
+                paste_clipboard()
+                return True
+            return False
+
+        if not _paste(cmd):
+            log_add(f"  lenh: clipboard kh xac minh duoc 3 lan — KHONG gui {cmd!r}.")
+            return False
         time.sleep(0.15)
         if guard_foreground(wh, "lenh/Enter-gui"):
             _tap_vk(0x0D); time.sleep(0.15)         # Enter gui

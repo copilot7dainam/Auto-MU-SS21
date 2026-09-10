@@ -24,7 +24,9 @@ build/
 dist/
 *.spec
 
-# Cai dat ca nhan cua tool (khong push)
+# Cai dat ca nhan cua tool (khong push — CHUA MAT KHAU tài khoản)
 mu_goto_cfg.json
+mu_goto_li.json
+.ua/
 mu_goto_simple_A.png
 .claude-flow/
