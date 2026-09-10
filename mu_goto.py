@@ -1263,22 +1263,22 @@ def main():
     CARD = "#FFFFFF"
     BORDER = "#E5E5EA"
     TEXT = "#1C1C1E"
-    # Segoe UI = font Windows ho tro dau tieng Viet day du nhat.
+    # Segoe UI = font Windows ho tro dau tieng Viet day du nhat. (80% kich thuoc cu)
     if USE_CTK:
         root.configure(fg_color=BG)
-        f_title = ctk.CTkFont(family="Segoe UI", size=19, weight="bold")
-        f_sub = ctk.CTkFont(family="Segoe UI", size=15)
-        f_body = ctk.CTkFont(family="Segoe UI", size=16)
-        f_btn = ctk.CTkFont(family="Segoe UI", size=17, weight="bold")
-        f_small = ctk.CTkFont(family="Segoe UI", size=14)
-        f_bar = ctk.CTkFont(family="Segoe UI", size=14, weight="bold")
+        f_title = ctk.CTkFont(family="Segoe UI", size=15, weight="bold")
+        f_sub = ctk.CTkFont(family="Segoe UI", size=12)
+        f_body = ctk.CTkFont(family="Segoe UI", size=13)
+        f_btn = ctk.CTkFont(family="Segoe UI", size=14, weight="bold")
+        f_small = ctk.CTkFont(family="Segoe UI", size=11)
+        f_bar = ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
     else:
-        f_title = tkfont.Font(family="Segoe UI", size=19, weight="bold")
-        f_sub = tkfont.Font(family="Segoe UI", size=15)
-        f_body = tkfont.Font(family="Segoe UI", size=16)
-        f_btn = tkfont.Font(family="Segoe UI", size=17, weight="bold")
-        f_small = tkfont.Font(family="Segoe UI", size=14)
-        f_bar = tkfont.Font(family="Segoe UI", size=14, weight="bold")
+        f_title = tkfont.Font(family="Segoe UI", size=15, weight="bold")
+        f_sub = tkfont.Font(family="Segoe UI", size=12)
+        f_body = tkfont.Font(family="Segoe UI", size=13)
+        f_btn = tkfont.Font(family="Segoe UI", size=14, weight="bold")
+        f_small = tkfont.Font(family="Segoe UI", size=11)
+        f_bar = tkfont.Font(family="Segoe UI", size=11, weight="bold")
         try:
             ttk.Style().theme_use("clam")
         except Exception:
@@ -1524,11 +1524,12 @@ def main():
     # xanh cu). Trong bar: ten nhan vat + Lv (bo map + toa do — khong du cho).
     bars_frame = (ctk.CTkFrame(sidebar, fg_color="transparent")
                   if USE_CTK else tk.Frame(sidebar, bg="#FFFFFF"))
-    bars_frame.pack(fill="x", padx=PAD, pady=(0, 6))
+    # pady tren = PAD (12) de bar lur xuong bang khoang cach bar->le phai.
+    bars_frame.pack(fill="x", padx=PAD, pady=(PAD, 6))
     MAX_SLOTS = 10
     BAR_H = 22
     BAR_R = 10
-    BAR_GAP = 8          # khoang chừa o dau bar (cho cham do)
+    BAR_GAP = 16         # khoang dau bar (chua cham do) — du de dot o GIUA
     DOT_RED = "#FF3B30"
 
     class Bar:
@@ -1562,10 +1563,12 @@ def main():
         def _draw(self):
             self.c.delete("all")
             w, h, r = self._w, self.h, self.r
-            # cham do o dau (trước track), giữ GAP cho no
+            # cham do nam GIUA khoang tu vien trai -> diem dau bar (BAR_GAP)
             if self._active:
-                d = 6
-                self.c.create_oval(2, (h - d) / 2.0, 2 + d, (h + d) / 2.0,
+                d = 7
+                cx = BAR_GAP / 2.0
+                self.c.create_oval(cx - d / 2.0, (h - d) / 2.0,
+                                   cx + d / 2.0, (h + d) / 2.0,
                                    outline="", fill=DOT_RED)
             x0 = BAR_GAP
             tw = max(0, w - x0)
@@ -2103,20 +2106,22 @@ def main():
         except Exception:
             pass
 
-    # ---- Lich su reset: tab Log chi ghi "reset thanh cong + khoang cach" ----
-    RESET_HISTORY = {}             # name -> epoch lan reset thanh cong truoc
+    # ---- Lich su reset: tab Log chi ghi ngan "Ten reset ( avg min / so lan )" ----
+    # avg = thoi gian TRUNG BINH giua cac lan reset cung nhan vat ke tu luc
+    # tool chay; so lan = tong lan reset thanh cong cua nhan vat do.
+    RESET_TIMES = {}               # name -> [epoch, epoch, ...] (lan luot)
     def note_reset_success(name):
         now = time.time()
-        hhmm = datetime.fromtimestamp(now).strftime("%H:%M")
-        prev = RESET_HISTORY.get(name)
-        RESET_HISTORY[name] = now
-        if prev is None:
-            span = "lần đầu"
+        key = name or "?"
+        hist = RESET_TIMES.setdefault(key, [])
+        hist.append(now)
+        n = len(hist)
+        if n >= 2:
+            avg_min = (hist[-1] - hist[0]) / 60.0 / (n - 1)
+            avg_txt = f"{avg_min:.0f} min" if avg_min >= 1 else f"{avg_min*60:.0f} s"
         else:
-            mins = (now - prev) / 60.0
-            span = f"mất {mins:.0f} phút" if mins >= 1 else f"mất {mins*60:.0f} giây"
-        line = (f"Nhân vật {name or '?'} reset thành công lúc {hhmm}, "
-                f"{span} / reset.")
+            avg_txt = "—"
+        line = f"{key} reset ( {avg_txt} / {n} )"
         def _w():
             logbox.insert(tk.END, line)
             logbox.itemconfig(logbox.size() - 1, fg=SUCCESS)
