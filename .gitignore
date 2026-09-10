@@ -26,3 +26,5 @@ dist/
 
 # Cai dat ca nhan cua tool (khong push)
 mu_goto_cfg.json
+mu_goto_simple_A.png
+.claude-flow/
