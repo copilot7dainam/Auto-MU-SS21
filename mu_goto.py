@@ -16,7 +16,7 @@ Su dung: python mu_goto.py
 import sys, os, time, math, json, re, ctypes, ctypes.wintypes as wt, threading
 from datetime import datetime
 import tkinter as tk
-from tkinter import font as tkfont
+from tkinter import font as tkfont, filedialog, messagebox
 import tkinter.ttk as ttk
 import pymem, pymem.process
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -305,27 +305,55 @@ _seed_bundled_files()
 # Diem cong khi Reset (sua bang chuot PHAI vao nut Reset).
 RESET_POINTS = {"str": 500, "agi": 500, "vit": 500, "ene": 500, "cmd": 500}
 
-def load_cfg():
-    """Doc cai dat: {"rows": [[mv_sel, sp_sel, min, max], ...],
-    "reset_points": {...}}. Dong thoi nap reset_points vao RESET_POINTS toan cuc."""
+def _cfg_dict():
+    """Toan bo dict config (giu nguyen cac key khac khi ghi)."""
     try:
         d = json.load(open(CFG_FILE, encoding="utf-8"))
         if isinstance(d, list):          # dinh dang cu: chi co rows
             d = {"rows": d}
-        pts = d.get("reset_points") or {}
-        for k in RESET_POINTS:
-            try:
-                RESET_POINTS[k] = int(pts.get(k, RESET_POINTS[k]))
-            except (TypeError, ValueError):
-                pass
-        return d.get("rows", [])
+        return d if isinstance(d, dict) else {}
     except Exception:
-        return []
+        return {}
+
+
+def load_cfg():
+    """Doc cai dat: {"rows": [...], "rows_by_acc": {...}, "reset_points": {...}}.
+    Tra ve rows (bo dung chung). Dong thoi nap reset_points vao RESET_POINTS."""
+    d = _cfg_dict()
+    pts = d.get("reset_points") or {}
+    for k in RESET_POINTS:
+        try:
+            RESET_POINTS[k] = int(pts.get(k, RESET_POINTS[k]))
+        except (TypeError, ValueError):
+            pass
+    return d.get("rows", [])
 
 
 def save_cfg(rows):
+    """Ghi rows + reset_points, GIU NGUYEN rows_by_acc va cac key khac."""
     try:
-        d = {"rows": rows, "reset_points": RESET_POINTS}
+        d = _cfg_dict()
+        d["rows"] = rows
+        d["reset_points"] = RESET_POINTS
+        d.pop("simple_b", None)
+        json.dump(d, open(CFG_FILE, "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def load_rows_map():
+    """{acc_key: rows5} — rows rieng theo account (LI). "" / "(Chung)" = bo
+    dung; neu chua co rieng thi fallback ve rows chung."""
+    d = _cfg_dict()
+    m = d.get("rows_by_acc")
+    return dict(m) if isinstance(m, dict) else {}
+
+
+def save_rows_map(m):
+    try:
+        d = _cfg_dict()
+        d["rows_by_acc"] = m
         json.dump(d, open(CFG_FILE, "w", encoding="utf-8"),
                   ensure_ascii=False, indent=2)
     except Exception:
@@ -872,6 +900,248 @@ def icon_present(img_path, thresh=0.90, hwnd=None):
         return None
 
 
+# ================== AUTO-LOGIN (tab LI) — primitives ==================
+# Dung lai grab_client/icon_present/click_at/copy_to_clipboard/paste_clipboard/
+# read_clipboard/_tap_vk/goi _ensure_foreground cua train. Them: tim nut theo
+# ANH (tra toa do TUONG DOI trong cua so), window theo title regex, minimize.
+LI_TPL_DIR = os.path.join(APP_DIR, "li_templates")
+LI_COORDS_FILE = os.path.join(APP_DIR, "mu_goto_li.json")
+LI_IMG_TIMEOUT = 300.0        # 5 phut moi buoc anh
+LI_STEP_PAUSE = 3.0
+
+
+def li_tpl(key):
+    return os.path.join(LI_TPL_DIR, f"{key}.png")
+
+
+def li_find_button(img_path, hwnd):
+    """Tim template tren anh client cua hwnd. Tra (x, y, score) TUONG DOI
+    trong cua so, hoac None. (Anh chup RGB -> chuyen BGR nhu icon_present.)"""
+    try:
+        import cv2, numpy as np
+        tpl = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+        if tpl is None:
+            return None
+        shot = grab_client(hwnd)
+        if shot is None:
+            return None
+        g = cv2.cvtColor(np.asarray(shot), cv2.COLOR_RGB2GRAY)
+        if tpl.shape[0] >= g.shape[0] or tpl.shape[1] >= g.shape[1]:
+            return None
+        res = cv2.matchTemplate(g, tpl, cv2.TM_CCOEFF_NORMED)
+        _, score, _, top_left = cv2.minMaxLoc(res)
+        score = float(score)
+        if score < 0.90:
+            return None
+        th, tw = tpl.shape[:2]
+        return (top_left[0] + tw // 2, top_left[1] + th // 2, score)
+    except Exception:
+        return None
+
+
+def _li_title_regex(pattern):
+    return re.compile(pattern, re.I)
+
+
+def li_find_windows(pattern):
+    """[hwnd] co title khop regex (bo cua so an/off-screen)."""
+    rx = _li_title_regex(pattern)
+    out = []
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def cb(hwnd, _):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        r = wt.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(r))
+        if r.left <= -10000 or (r.right - r.left) < 40:
+            return True          # off-screen/minimize tray -> bo qua
+        n = user32.GetWindowTextLengthW(hwnd)
+        if n:
+            buf = ctypes.create_unicode_buffer(n + 1)
+            user32.GetWindowTextW(hwnd, buf, n + 1)
+            if buf.value and rx.search(buf.value):
+                out.append(hwnd)
+        return True
+    user32.EnumWindows(cb, 0)
+    return out
+
+
+def _rect_area(hwnd):
+    r = wt.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(r))
+    return (r.right - r.left) * (r.bottom - r.top)
+
+
+def li_pick_window(hits):
+    """Chon cua so lon nhat trong hits (None neu rong)."""
+    if not hits:
+        return None
+    return max(hits, key=_rect_area)
+
+
+def li_restore_launcher(hwnd):
+    """Khui cua so launcher ke ca khi minimize (SW_MINIMIZE -> restore)."""
+    try:
+        SW_MINIMIZE_, SW_RESTORE_ = 6, 9
+        user32.ShowWindow(hwnd, SW_RESTORE_)
+        time.sleep(0.4)
+    except Exception:
+        pass
+
+
+def li_minimize(hwnd):
+    try:
+        user32.ShowWindow(hwnd, 6)     # SW_MINIMIZE
+    except Exception:
+        pass
+
+
+def li_grab_hwnd(hwnd):
+    """Chup toan bo vung cua so hwnd (ke ca khong phai main.exe) -> PIL.Image
+    RGB. Dung cho launcher (Play now). None neu hong."""
+    try:
+        from PIL import ImageGrab
+        r = wt.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(r))
+        W, H = r.right - r.left, r.bottom - r.top
+        if W < 8 or H < 8:
+            return None
+        try:
+            if user32.GetForegroundWindow() != hwnd:
+                user32.BringWindowToTop(hwnd)
+                user32.SetForegroundWindow(hwnd)
+                time.sleep(0.12)
+        except Exception:
+            pass
+        return ImageGrab.grab(bbox=(r.left, r.top, r.left + W, r.top + H))
+    except Exception:
+        return None
+
+
+def li_click_rel(hwnd, x, y):
+    """Bam toa do TUONG DOI trong cua so hwnd (quy doi sang man hinh)."""
+    r = wt.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(r))
+    click_at(r.left + int(x), r.top + int(y), right=False, hwnd=hwnd)
+
+
+def li_wait_img_click(hwnd, key, timeout=LI_IMG_TIMEOUT):
+    """Cho anh template xuat hien on dinh (2 lan lien tiep) trong cua so roi
+    bam vao no. Tra True neu bam, False neu het gio/bi dung."""
+    path = li_tpl(key)
+    if not os.path.exists(path):
+        return False
+    end, last, stable = time.time() + timeout, None, 0
+    while time.time() < end:
+        if STOP_REQUESTED[0] or check_stop_key():
+            return False
+        _ensure_foreground(hwnd)
+        hit = li_find_button(path, hwnd)
+        if hit:
+            if last and abs(hit[0] - last[0]) <= 2 and abs(hit[1] - last[1]) <= 2:
+                stable += 1
+            else:
+                stable = 0
+            last = hit
+            if stable >= 1:
+                li_click_rel(hwnd, hit[0], hit[1])
+                time.sleep(LI_STEP_PAUSE)
+                return True
+        else:
+            last, stable = None, 0
+        time.sleep(0.8)
+    return False
+
+
+def li_wait_img_present(hwnd, key, timeout=LI_IMG_TIMEOUT):
+    """Chi cho anh xuat hien (khong bam) — dung cho Credit (tin hieu load xong)."""
+    path = li_tpl(key)
+    if not os.path.exists(path):
+        return True        # khong co template -> coi như xong (khong chan)
+    end, last, stable = time.time() + timeout, None, 0
+    while time.time() < end:
+        if STOP_REQUESTED[0] or check_stop_key():
+            return False
+        _ensure_foreground(hwnd)
+        hit = li_find_button(path, hwnd)
+        if hit:
+            if last and abs(hit[0] - last[0]) <= 2 and abs(hit[1] - last[1]) <= 2:
+                return True
+            last = hit
+        else:
+            last = None
+        time.sleep(0.8)
+    return False
+
+
+def li_type_credentials(user, pwd):
+    """Clipboard paste: user -> Tab -> pass -> Enter. Xac minh clipboard
+    truoc khi dan (nhu send_chat_command)."""
+    def _paste(text):
+        for _ in range(3):
+            if copy_to_clipboard(text) and read_clipboard() == text:
+                paste_clipboard()
+                return
+            time.sleep(0.1)
+        type_unicode(text)          # fallback khong dung clipboard
+    _ensure_foreground(ACTIVE_HWND[0])
+    time.sleep(0.2)
+    _paste(user)
+    time.sleep(1.0)
+    _tap_vk(0x09)                   # VK_TAB (scan code that)
+    time.sleep(1.0)
+    _paste(pwd)
+    time.sleep(1.0)
+    _tap_vk(0x0D)                   # VK_RETURN gui dang nhap
+
+
+def load_li_cfg():
+    """Doc cai dat LI: accounts, launcher_path, titles, coords, confidence."""
+    try:
+        d = json.load(open(LI_COORDS_FILE, encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_li_cfg(d):
+    try:
+        os.makedirs(LI_TPL_DIR, exist_ok=True)
+        json.dump(d, open(LI_COORDS_FILE, "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def li_default_account():
+    return {"user": "", "password": "", "server_index": 0,
+            "char_name": "", "enabled": True}
+
+
+def li_load_accounts(cfg=None):
+    cfg = cfg if cfg is not None else load_li_cfg()
+    accs = cfg.get("accounts")
+    if isinstance(accs, list) and accs:
+        out = []
+        for a in accs:
+            d = li_default_account()
+            d.update({k: a[k] for k in d if k in a})
+            out.append(d)
+        return out
+    # migrate tu ban mu_login cu (user/password/server_index o goc)
+    if cfg.get("user"):
+        return [{"user": cfg["user"], "password": cfg.get("password", ""),
+                 "server_index": int(cfg.get("server_index", 0)),
+                 "char_name": cfg.get("char_name", ""), "enabled": True}]
+    return []
+
+
+def li_save_accounts(cfg, accs):
+    cfg = dict(cfg)
+    cfg["accounts"] = accs
+    save_li_cfg(cfg)
+
+
 def send_home_verified(hwnd=None):
     """Toi duoc dich: 1s sau -> co che Home nhu cu: nhan Home -> 1s -> kiem
     tra anh Helper -> chua co -> nhan lai -> ... LAP VO HAN toi khi thay
@@ -1186,6 +1456,144 @@ def load_matrix():
     return A, inv
 
 
+LI_BUSY = [False]           # login dang chay — train tu choi de tranh tranh
+LI_BINDINGS = {}            # user -> hwnd dang gan (do LI dang hoac title map)
+LI_NEEDS_RELOGIN = []       # queue: user can relogin lai
+LI_RELOGIN_FAILS = {}       # user -> so lan fail lien tiep (>=3 thi nghi 60s)
+LI_RELOGIN_WAIT = {}        # user -> epoch duoc phep thu lai
+
+
+def li_game_windows(pattern):
+    return [h for h in li_find_windows(pattern)]
+
+
+def li_parse_pt(v):
+    try:
+        return (int(v[0]), int(v[1]))
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def li_run_account(acc, cfg, log):
+    """1 luong dang nhap cho 1 account. cfg: keys launcher_path, launcher_title,
+    game_title, coords{login,s0..s4,post1..4}. Tra (True, hwnd) neu thanh cong
+    (kem cua so game MOI) hoac (False, None)."""
+    coords = cfg.get("coords", {}) or {}
+    ltitle = cfg.get("launcher_title", "MU.*Launcher")
+    gtitle = cfg.get("game_title", "Season21")
+    conf = float(cfg.get("confidence", 0.9))
+    login_pt = li_parse_pt(coords.get("login"))
+    srv_pt = li_parse_pt(coords.get(f"s{int(acc['server_index'])}"))
+    if login_pt is None or srv_pt is None:
+        log(f"[loi] {acc['user']}: thieu toa do Dang nhap/Server")
+        return (False, None)
+
+    def stopped():
+        return STOP_REQUESTED[0] or check_stop_key()
+
+    # B1 launcher: dung cai dang mo (ke ca minimize), khong mo lan 2
+    h = li_pick_window(li_find_windows(ltitle))
+    if h:
+        li_restore_launcher(h)
+    else:
+        exe = cfg.get("launcher_path", "")
+        if not exe or not os.path.isfile(exe):
+            log("[loi] launcher_path khong ton tai (cau hinh LI)"); return (False, None)
+        try:
+            import subprocess
+            subprocess.Popen([exe], cwd=os.path.dirname(exe))
+        except Exception:
+            log("[loi] khong mo duoc launcher"); return (False, None)
+        end = time.time() + 60
+        while time.time() < end and not h:
+            h = li_pick_window(li_find_windows(ltitle))
+            if not h:
+                time.sleep(0.5)
+        if not h:
+            log("[loi] khong thay cua so launcher"); return (False, None)
+
+    # B2 Play now (anh) -> bam -> minimize launcher
+    before = set(li_game_windows(gtitle))
+    if stopped() or not li_wait_img_click(h, "play"):
+        return (False, None)
+    li_minimize(h)
+
+    # B3 cua so game MOI
+    g = None
+    end = time.time() + 120
+    while time.time() < end and not stopped():
+        fresh = [x for x in li_game_windows(gtitle) if x not in before]
+        if fresh:
+            g = li_pick_window(fresh); break
+        time.sleep(0.5)
+    if g is None and not before:
+        g = li_pick_window(li_game_windows(gtitle))
+    if g is None:
+        log("  [loi] khong co cua so game moi"); return (False, None)
+    _ensure_foreground(g)
+    ACTIVE_HWND[0] = g
+    time.sleep(LI_STEP_PAUSE)
+
+    # B4 Credit = tin hieu load xong
+    if stopped() or not li_wait_img_present(g, "credit"):
+        return (False, None)
+    time.sleep(LI_STEP_PAUSE)
+
+    # B5/B6 Dang nhap -> Server
+    _ensure_foreground(g); li_click_rel(g, login_pt[0], login_pt[1]); time.sleep(LI_STEP_PAUSE)
+    _ensure_foreground(g); li_click_rel(g, srv_pt[0], srv_pt[1]); time.sleep(LI_STEP_PAUSE)
+
+    # B7 clipboard dang nhap
+    _ensure_foreground(g); li_type_credentials(acc["user"], acc["password"])
+    time.sleep(LI_STEP_PAUSE)
+
+    # B8 Connect -> bam
+    if stopped() or not li_wait_img_click(g, "connect"):
+        return (False, g)
+    time.sleep(LI_STEP_PAUSE)
+
+    # B9 4 diem sau Connect (co dinh trong config; thieu -> bo qua)
+    for j in range(1, 5):
+        if stopped():
+            return (False, g)
+        pt = li_parse_pt(coords.get(f"post{j}"))
+        if pt:
+            _ensure_foreground(g); li_click_rel(g, pt[0], pt[1]); time.sleep(LI_STEP_PAUSE)
+    return (True, g)
+
+
+def li_run_all(cfg, accounts, log, on_done=None):
+    """Chay lan luot moi account (worker thread). Tranh train qua LI_BUSY."""
+    LI_BUSY[0] = True
+    STOP_REQUESTED[0] = False
+    ok_n = 0
+    try:
+        enabled = [a for a in accounts if a.get("user") and a.get("enabled", True)]
+        for i, acc in enumerate(enabled, 1):
+            log(f"===== LI {i}/{len(enabled)}: {acc['user']} (S{int(acc['server_index'])+1}) =====")
+            for attempt in range(1, 4):
+                if STOP_REQUESTED[0] or check_stop_key():
+                    log(">> LI dung."); return
+                ok, g = li_run_account(acc, cfg, log)
+                if ok:
+                    ok_n += 1
+                    if g:
+                        LI_BINDINGS[acc["user"]] = g
+                    LI_RELOGIN_FAILS.pop(acc["user"], None)
+                    LI_RELOGIN_WAIT.pop(acc["user"], None)
+                    log(f"  ✔ {acc['user']} xong" + (f" hwnd={g}" if g else ""))
+                    break
+                log(f"  {acc['user']}: lan {attempt}/3 that bai — thu lai")
+                time.sleep(LI_STEP_PAUSE)
+        log(f"===== LI xong: {ok_n}/{len(enabled)} =====")
+    except Exception as e:
+        log(f"[loi LI] {type(e).__name__}: {e}")
+    finally:
+        LI_BUSY[0] = False
+        if on_done:
+            on_done()
+
+
 def main():
     global GHWND
     enable_debug()
@@ -1383,7 +1791,7 @@ def main():
                             fg="#FFFFFF" if sel else TEXT)
 
     for key, txt in (("ctrl", "RR"), ("cfg", "Spot"),
-                     ("log", "Log")):
+                     ("log", "Log"), ("li", "LI")):
         if USE_CTK:
             b = ctk.CTkButton(top_bar, text=txt, font=f_body, height=26,
                               width=52, corner_radius=6,
@@ -1401,14 +1809,16 @@ def main():
     def set_status(m):
         log_add(f"[*] {m}")
 
-    def capture_icon(save_path, label):
+    def capture_icon(save_path, label, grab_fn=None):
         """Chup anh client game -> VE LEN overlay (den 100%) -> keo chuot
         quanh bieu tuong TRUC TIEP TREN ANH (ty le 1:1, khong qua toa do man
-        hinh → hong khi game off-screen/DPI scaling) -> luu template PNG."""
-        shot = grab_client()
+        hinh → hong khi game off-screen/DPI scaling) -> luu template PNG.
+        grab_fn=None -> grab_client (game); truyen ham khac de chup cua so
+        launcher cho tab LI."""
+        shot = (grab_fn or grab_client)()
         if shot is None:
-            set_status("Khong chup duoc man hinh game (mo game truoc).")
-            return
+            set_status("Khong chup duoc man hinh (mo cua so nguon truoc).")
+            return False
         from PIL import Image, ImageTk
         ov = tk.Toplevel(root)
         ov.attributes("-fullscreen", True)
@@ -1463,6 +1873,7 @@ def main():
         cv.bind("<B1-Motion>", drag)
         cv.bind("<ButtonRelease-1>", release)
         ov.bind("<Escape>", esc)
+        return True
 
     def center_on_root(dlg, w=None, h=None):
         """Dat dlg vao GIUA cua so tool (tinh sau khi ep layout xong)."""
@@ -1694,7 +2105,50 @@ def main():
                 sl["frame"].pack(fill="x", pady=3)
             else:
                 sl["frame"].pack_forget()
+        li_idle_watch(wins)   # khong Train: tu dong relogin cua so mat
         root.after(2000, sync_bars)
+
+    def li_idle_watch(wins):
+        """Ngoai Train (sync_bars goi): account da bind ma cua so mat →
+        spawn worker relogin (thread rieng, khong lam dong bang tk).
+        Co cheque LI_BUSY/TRAIN_ACTIVE de khong bao gio cham ban phim
+        cung luc voi Train hay login thu cong."""
+        if LI_BUSY[0] or TRAIN_ACTIVE[0] or not LI_BINDINGS:
+            return
+        now = time.time()
+        alive = set(wins.keys())
+        for u, hwnd in list(LI_BINDINGS.items()):
+            if hwnd in alive:
+                continue
+            if now < LI_RELOGIN_WAIT.get(u, 0):
+                continue
+            try:
+                acc = next(a for a in li_snapshot_accounts() if a["user"] == u)
+            except StopIteration:
+                LI_BINDINGS.pop(u, None)
+                continue
+            LI_BUSY[0] = True
+            log_add(f"  ⚠ {u}: cua so mat → tu dong relogin (khong Train)")
+
+            def _worker(a=acc, key=u):
+                ok = False
+                try:
+                    for _attempt in range(1, 4):
+                        if STOP_REQUESTED[0] or check_stop_key():
+                            return
+                        ok, g = li_run_account(a, load_li_cfg(), log_add)
+                        if ok:
+                            if g:
+                                LI_BINDINGS[key] = g
+                            LI_RELOGIN_WAIT.pop(key, None)
+                            log_add(f"  ✔ {key}: relogin thanh cong")
+                            return
+                    LI_RELOGIN_WAIT[key] = time.time() + 60.0
+                    log_add(f"  {key}: 3 lan hong — thu lai sau 60s")
+                finally:
+                    LI_BUSY[0] = False
+            threading.Thread(target=_worker, daemon=True).start()
+            break                      # mot lan chi mot relogin
 
     def toggle_train():
         """Lan dau: bat dau chain. Lan tiep (dang chay): dung chain."""
@@ -1780,8 +2234,25 @@ def main():
     min_vars = []             # tk.StringVar level min tung dong
     max_vars = []             # tk.StringVar level max tung dong
 
-    # Khoi phuc cai dat lan truoc (TRUOC khi tao card — card doc min_vars[r]).
-    cfg = load_cfg()
+    # ---- spot per-account: ROWS_MAP {key: rows5}; "(Chung)" = du lieu cu ----
+    ROWS_MAP = load_rows_map()
+    if "(Chung)" not in ROWS_MAP:
+        ROWS_MAP["(Chung)"] = load_cfg()
+    SPOT_ACC_KEY = ["(Chung)"]
+
+    # ---- header: dropdown chon account cho bo 5 dong duoi ----
+    spot_hdr = (ctk.CTkFrame(inner, fg_color="transparent") if USE_CTK
+                else tk.Frame(inner, bg=BG))
+    spot_hdr.pack(fill="x", pady=(0, 6))
+    label(spot_hdr, "Account:", f_small, text_color=MUTED).pack(
+        side="left", padx=(4, 6))
+    SPOT_SEL = tk.StringVar(value="(Chung)")
+    spot_combo = ttk.Combobox(spot_hdr, textvariable=SPOT_SEL, state="readonly",
+                              width=20, font=f_small, values=["(Chung)"])
+    spot_combo.pack(side="left")
+
+    # Khoi phuc bo dong "(Chung)" (TRUOC khi tao card — card doc min_vars[r]).
+    cfg = ROWS_MAP["(Chung)"]
     for r in range(N_ROWS):
         if r < len(cfg):
             try:
@@ -1857,10 +2328,90 @@ def main():
         for r in range(N_ROWS):
             refresh_map_row(r); refresh_spot_row(r)
 
+    ROWS_LOADING = [False]
+
     def persist_rows():
-        """Luu toan bo trang thai 5 dong ra file config."""
-        save_cfg([[mv_sel[r], sp_sel[r], min_vars[r].get(), max_vars[r].get()]
-                  for r in range(N_ROWS)])
+        """Luu 5 dong hien tai theo KEY dang chon (per-account). "(Chung)"
+        dong thoi ghi ve dinh dang cu (save_cfg) de tuong thich ngoc."""
+        if ROWS_LOADING[0]:
+            return
+        key = SPOT_SEL.get() or "(Chung)"
+        SPOT_ACC_KEY[0] = key
+        ROWS_MAP[key] = [[mv_sel[r], sp_sel[r], min_vars[r].get(), max_vars[r].get()]
+                         for r in range(N_ROWS)]
+        save_rows_map(ROWS_MAP)
+        if key == "(Chung)":
+            save_cfg(ROWS_MAP[key])
+
+    def apply_rows(cfg5):
+        """Nap 5 dong (list rows) vao widget dang hien thi."""
+        ROWS_LOADING[0] = True
+        try:
+            for r in range(N_ROWS):
+                mv_sel[r] = 0
+                sp_sel[r] = None
+                min_vars[r].set("")
+                max_vars[r].set("")
+                if r < len(cfg5):
+                    try:
+                        mv_sel[r] = max(0, min(len(MOVE_COMMANDS) - 1, int(cfg5[r][0])))
+                        s = cfg5[r][1]
+                        sp_sel[r] = None if s is None else int(s)
+                        min_vars[r].set(str(cfg5[r][2] if len(cfg5[r]) > 2 else ""))
+                        max_vars[r].set(str(cfg5[r][3] if len(cfg5[r]) > 3 else ""))
+                    except Exception:
+                        pass
+            refresh_all()
+        finally:
+            ROWS_LOADING[0] = False
+
+    def build_rows(cfg5):
+        """Chuyen list rows trong config -> [(tok,x,y,vmin,vmax)] hop le."""
+        out = []
+        for row in cfg5 or []:
+            try:
+                mv = int(row[0]); s = row[1]
+                if s is None:
+                    continue
+                i = int(s)
+                tok = MOVE_COMMANDS[mv][0]
+                lst = SPOTS.get(tok, [])
+                if not (0 <= i < len(lst)):
+                    continue
+                vmin = int(row[2]); vmax = int(row[3])
+            except (ValueError, IndexError, TypeError):
+                continue
+            if vmin > vmax:
+                vmin, vmax = vmax, vmin
+            _t, _nm, x, y = lst[i]
+            out.append((tok, x, y, vmin, vmax))
+        return out
+
+    def spot_acc_choices():
+        ch = ["(Chung)"]
+        try:
+            for a in li_snapshot_accounts():
+                if a["user"] and a["user"] not in ch:
+                    ch.append(a["user"])
+        except Exception:
+            pass
+        return ch
+
+    def refresh_spot_choices():
+        vals = spot_acc_choices()
+        try:
+            spot_combo.configure(values=vals)
+            if SPOT_SEL.get() not in vals:
+                SPOT_SEL.set("(Chung)")
+        except Exception:
+            pass
+
+    def on_spot_acc_change(*_a):
+        key = SPOT_SEL.get() or "(Chung)"
+        SPOT_ACC_KEY[0] = key
+        apply_rows(ROWS_MAP.get(key) or [])
+
+    SPOT_SEL.trace_add("write", on_spot_acc_change)
 
     def pick_move(r, i):
         mv_sel[r] = i
@@ -1894,53 +2445,118 @@ def main():
         log_add(f"  Đã lưu {tok}: {nm} ({x}, {y})")
 
     TRAIN_ACTIVE = [False]
+    def acc_key_for_name(nm):
+        """(char_name -> account key) cho dropdown Spot; khong co thi '(Chung)'."""
+        if not nm:
+            return "(Chung)"
+        try:
+            for a in li_snapshot_accounts():
+                cn = (a.get("char_name") or "").strip()
+                if cn and cn.lower() == nm.strip().lower():
+                    return a["user"] or "(Chung)"
+        except Exception:
+            pass
+        return "(Chung)"
+
+    def rows_cfg_for(hwnd):
+        """5 dong config ap dung cho cua so (theo nhan vat trong title)."""
+        nm, _lv = read_title(hwnd)
+        key = acc_key_for_name(nm)
+        return ROWS_MAP.get(key) or ROWS_MAP.get("(Chung)") or load_cfg()
+
+    def check_relogin(wins):
+        """Watchdog chay TRONG train thread (cung thread → khong bao gio
+        tranh ban phim):
+          - cua so game xuat hien va title khop char_name 1 account → BIND.
+          - cua so da BIND cua account nao bien mat → relogin inline ngay
+            tai do (train dung tam), toi da 3 lan, hong ca 3 thi nghi 60s.
+        Chi xu ly account tung duoc bind — ban tay dong thi KHONG bi lap."""
+        now = time.time()
+        try:
+            accounts = [a for a in li_snapshot_accounts()
+                        if a["user"] and a["enabled"]]
+        except Exception:
+            return
+        alive = set(wins.keys())
+        # 1) bind cua so hien dien theo char_name
+        for hwnd in alive:
+            nm, _lv = read_title(hwnd)
+            key = acc_key_for_name(nm)
+            if key != "(Chung)":
+                LI_BINDINGS[key] = hwnd
+                LI_RELOGIN_FAILS.pop(key, None)
+        # 2) account da tung bind ma cua so mat → relogin
+        for a in accounts:
+            u = a["user"]
+            prev = LI_BINDINGS.get(u)
+            if prev is None or user32.IsWindow(prev):
+                continue
+            wait_until = LI_RELOGIN_WAIT.get(u, 0)
+            if now < wait_until:
+                continue
+            log_add(f"  ⚠ {u}: cua so mat ket noi → tu dong relogin")
+            ok = False
+            for attempt in range(1, 4):
+                if STOP_REQUESTED[0] or check_stop_key():
+                    return
+                ok, _g = li_run_account(a, load_li_cfg(), log_add)
+                if ok:
+                    break
+                log_add(f"  {u}: relogin lan {attempt}/3 that bai")
+                time.sleep(LI_STEP_PAUSE)
+            if ok:
+                LI_RELOGIN_FAILS[u] = 0
+                LI_RELOGIN_WAIT.pop(u, None)
+                log_add(f"  ✔ {u}: relogin thanh cong — train tiep tuc")
+            else:
+                LI_RELOGIN_FAILS[u] = LI_RELOGIN_FAILS.get(u, 0) + 1
+                LI_RELOGIN_WAIT[u] = time.time() + 60.0
+                log_add(f"  {u}: 3 lan hong — nghi 60s roi thu lai "
+                        f"(tong lan fail: {LI_RELOGIN_FAILS[u]})")
+        # 3) dong cua so da dong han (khong con game nao cua no) → don binding
+        for u in list(LI_BINDINGS):
+            if not any(x["user"] == u for x in accounts):
+                del LI_BINDINGS[u]
+
     def train_chain():
         """Duyet LAN LUOT tung cua so game. Moi vong: tham 1 cua so — dam bao
-        nhan vat o dung spot theo Lv cua no, Helper + Giam tai dang BAT — roi
-        RUI cho tu train, sang cua so ke. Lv 400 -> Reset -> spot dong 1.
-        Lv vuot het moi dong -> cua so do 'done'. PgUp = dung tat ca."""
+        nhan vat o dung spot theo Lv cua no (spot theo account, fallback
+        '(Chung)'), Helper + Giam tai dang BAT — roi RUI cho tu train.
+        Lv dat nguong -> Reset -> spot dong 1. PgUp = dung tat ca."""
         if TRAIN_ACTIVE[0] or running[0]:
             return
-        rows = []
-        for r in range(N_ROWS):
-            i = sp_sel[r]
-            tok = MOVE_COMMANDS[mv_sel[r]][0]
-            lst = SPOTS.get(tok, [])
-            if i is None or not (0 <= i < len(lst)):
-                continue
-            try:
-                vmin = int(min_vars[r].get())
-                vmax = int(max_vars[r].get())
-            except ValueError:
-                continue
-            if vmin > vmax:
-                vmin, vmax = vmax, vmin
-            _t, nm, x, y = lst[i]
-            rows.append((tok, x, y, vmin, vmax))
-        if not rows:
+        # can it least one usable bo dong (Chung) hoac bat ky account nao
+        any_rows = build_rows(ROWS_MAP.get("(Chung)") or load_cfg())
+        if not any_rows:
             set_status("Chưa có dòng hợp lệ (cần chọn spot + nhập Lv Min/Max)")
             return
         TRAIN_ACTIVE[0] = True
         set_train_active(True)
         reset_stop()
-        log_add(f"  === Train chain: {len(rows)} map, duyet tung cua so ===")
+        log_add("  === Train chain: duyet tung cua so (spot theo account) ===")
         try:
           try:
             while True:
-                wins = list(list_game_windows().items())
+                wins = dict(list_game_windows())
+                check_relogin(wins)          # inline — relogin xong moi train
+                wins = dict(list_game_windows())
                 log_add(f"  Vong train: {len(wins)} cua so game")
                 if not wins:
                     set_status("Khong con cua so game nao.")
                     break
                 pending = []
                 stopped = False
-                for hwnd, pid in wins:
+                for hwnd, pid in wins.items():
                     if STOP_REQUESTED[0] or check_stop_key():
                         log_add("  Dung: STOP_REQUESTED/PgUp duoc phat hien.")
                         stopped = True
                         break
                     set_active(hwnd)
                     time.sleep(2.0)              # moi cua so cach nhau 2s
+                    rows = build_rows(rows_cfg_for(hwnd))
+                    if not rows:
+                        log_add("  (cua so nay chua co dong spot — bo qua)")
+                        continue
                     outcome = run_visit(rows)
                     if outcome == "stopped":
                         stopped = True
@@ -2064,6 +2680,191 @@ def main():
         logbox.yview_scroll(-1 if ev.delta > 0 else 1, "units")
         return "break"
     logbox.bind("<MouseWheel>", _wheel)
+
+    # ---------- TAB LI: auto-login (config gear + +account + danh sach 2x5) ----
+    li_card = card(content)
+    TABS["li"] = li_card
+    li_card.grid_columnconfigure(0, weight=1)
+    li_card.grid_rowconfigure(2, weight=1)
+
+    li_hdr = (ctk.CTkFrame(li_card, fg_color="transparent") if USE_CTK
+              else tk.Frame(li_card, bg=CARD))
+    li_hdr.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
+    li_hdr.grid_columnconfigure((0, 1), weight=1, uniform="lihdr")
+    btn_li_cfg = btn_secondary(li_hdr, "⚙ Config", command=lambda: li_open_config())
+    btn_li_cfg.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+    btn_li_add = btn_secondary(li_hdr, "➕ Account", command=lambda: li_add_row())
+    btn_li_add.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+    btn_li_run = btn_primary(li_card, "▶  Chay login", width=0, height=30,
+                             command=lambda: li_run_clicked())
+    btn_li_run.grid(row=1, column=0, sticky="ew", padx=8, pady=(6, 0))
+
+    li_list_parent = (ctk.CTkFrame(li_card, fg_color="transparent") if USE_CTK
+                      else tk.Frame(li_card, bg=CARD))
+    li_list_parent.grid(row=2, column=0, sticky="nsew", padx=8, pady=8)
+    li_list_parent.grid_columnconfigure((0, 1), weight=1, uniform="li2col")
+
+    li_acc_rows = []      # moi: {"frame","cb","user","srv","del","data"}
+
+    def li_snapshot_accounts():
+        out = []
+        for rec in li_acc_rows:
+            out.append({"user": rec["user"].get().strip(),
+                        "password": rec["password"].get(),
+                        "server_index": int(rec["srv"].get().split()[-1]) - 1,
+                        "char_name": rec["char"].get().strip(),
+                        "enabled": bool(rec["cb"].get())})
+        return out
+
+    def li_add_row(acc=None):
+        acc = acc or li_default_account()
+        col = len(li_acc_rows) % 2
+        rown = len(li_acc_rows) // 2
+        box = tk.Frame(li_list_parent, bg=CARD)
+        box.grid(row=rown, column=col, sticky="nsew", padx=3, pady=2)
+        enabled = tk.BooleanVar(value=bool(acc.get("enabled", True)))
+        cb = tk.Checkbutton(box, variable=enabled, width=0)
+        cb.grid(row=0, column=0, sticky="nw")
+        u = tk.StringVar(value=acc.get("user", ""))
+        p = tk.StringVar(value=acc.get("password", ""))
+        ch = tk.StringVar(value=acc.get("char_name", ""))
+        s = tk.StringVar(value=f"Server {int(acc.get('server_index', 0)) + 1}")
+        tk.Entry(box, textvariable=u, font=f_small, width=10).grid(row=0, column=1, sticky="w")
+        tk.Entry(box, textvariable=p, font=f_small, width=8, show="*").grid(row=0, column=2, sticky="w")
+        tk.Entry(box, textvariable=ch, font=f_small, width=8).grid(row=1, column=1, columnspan=2, sticky="w")
+        ttk.Combobox(box, textvariable=s, state="readonly", font=f_small, width=8,
+                     values=[f"Server {i + 1}" for i in range(5)]).grid(row=1, column=3, sticky="w")
+        rec = {"frame": box, "cb": cb, "var": enabled, "user": u,
+               "password": p, "char": ch, "srv": s}
+        def _on_edit(*a):
+            try:
+                li_save_accounts(load_li_cfg(), li_snapshot_accounts())
+                refresh_spot_choices()
+            except Exception:
+                pass
+        for v in (u, p, ch, s, enabled):
+            v.trace_add("write", _on_edit)
+        li_acc_rows.append(rec)
+
+    def li_render_accounts(accs):
+        for rec in li_acc_rows:
+            rec["frame"].destroy()
+        li_acc_rows.clear()
+        for a in accs:
+            li_add_row(a)
+
+    def li_open_config():
+        dlg = tk.Toplevel(root)
+        dlg.title("LI Config")
+        dlg.transient(root); dlg.grab_set(); dlg.configure(bg=CARD)
+        cfg = load_li_cfg()
+        rows = []
+        def add_row(labeltext, key, default=""):
+            tk.Label(dlg, text=labeltext, font=f_small, fg=TEXT, bg=CARD
+                     ).pack(anchor="w", padx=10, pady=(6, 0))
+            v = tk.StringVar(value=str(cfg.get(key, default)))
+            fr = tk.Frame(dlg, bg=CARD); fr.pack(fill="x", padx=10)
+            tk.Entry(fr, textvariable=v, font=f_small, relief="solid", bd=1
+                     ).pack(side="left", fill="x", expand=True)
+            rows.append((key, v))
+            return fr
+        # launcher path + Chon
+        tk.Label(dlg, text="Launcher:", font=f_small, fg=TEXT, bg=CARD
+                 ).pack(anchor="w", padx=10, pady=(6, 0))
+        fr = tk.Frame(dlg, bg=CARD); fr.pack(fill="x", padx=10)
+        ex = tk.StringVar(value=str(cfg.get("launcher_path", "")))
+        tk.Entry(fr, textvariable=ex, font=f_small, relief="solid", bd=1
+                 ).pack(side="left", fill="x", expand=True)
+        def _pick():
+            pth = filedialog.askopenfilename(
+                filetypes=[("Exe", "*.exe"), ("All", "*.*")])
+            if pth:
+                ex.set(pth.replace("\\", "/"))
+        tk.Button(fr, text="Chon", command=_pick, font=f_small, relief="flat", bd=0,
+                  bg="#F2F2F7").pack(side="left", padx=(4, 0))
+        rows.append(("launcher_path", ex))
+        add_row("Title launcher (regex):", "launcher_title", "MU.*Launcher")
+        add_row("Title game (regex):", "game_title", "Season21")
+        coords = dict(cfg.get("coords", {}) or {})
+        camfr = tk.Frame(dlg, bg=CARD); camfr.pack(fill="x", padx=10)
+        for kind, lbl in (("play", "Play"), ("credit", "Credit"), ("connect", "Connect")):
+            tk.Button(camfr, text=f"📷 {lbl}",
+                      command=lambda kk=kind, ll=lbl: capture_icon(
+                          li_tpl(kk), ll, grab_fn=li_grab_launcher_shot),
+                      font=f_small, relief="flat", bd=0, bg="#F2F2F7"
+                      ).pack(side="left", padx=2, pady=2)
+        coordfr = tk.Frame(dlg, bg=CARD); coordfr.pack(fill="x", padx=10)
+        def _coord_btn(key, labeltext):
+            def go():
+                pt = li_capture_coord_via_cursor()
+                if pt:
+                    coords[key] = list(pt)
+                    set_status(f"{labeltext} = {pt}")
+            tk.Button(coordfr, text=f"◎ {labeltext}", command=go, font=f_small,
+                      relief="flat", bd=0, bg="#F2F2F7").pack(side="left", padx=2, pady=2)
+        _coord_btn("login", "Login")
+        for i in range(5):
+            _coord_btn(f"s{i}", f"S{i+1}")
+        for i in range(1, 5):
+            _coord_btn(f"post{i}", f"P{i}")
+        def _save():
+            new = load_li_cfg()
+            for key, v in rows:
+                new[key] = v.get()
+            new["coords"] = coords
+            save_li_cfg(new)
+            set_status("LI config da luu.")
+            dlg.destroy()
+        tk.Button(dlg, text="Luu", command=_save, font=f_body, relief="flat", bd=0,
+                  bg=ACCENT, fg="#FFFFFF").pack(pady=10)
+
+    # shot cua launcher cho capture template Play (khong phai main.exe)
+    def li_grab_launcher_shot():
+        cfg = load_li_cfg()
+        hits = li_find_windows(cfg.get("launcher_title", "MU.*Launcher"))
+        h = li_pick_window(hits)
+        return li_grab_hwnd(h) if h else None
+
+    def li_capture_coord_via_cursor():
+        """Cho 3s de tro chuot toi diem trong cua so game -> tra (x,y) TUONG DOI
+        cua so game (chup theo title game)."""
+        cfg = load_li_cfg()
+        g = li_pick_window(li_find_windows(cfg.get("game_title", "Season21")))
+        if not g:
+            set_status("Chua co cua so game de lay toa do")
+            return None
+        set_status("Di chuot toi diem (3s)...")
+        root.withdraw()
+        start = time.time()
+        pt = wt.POINT()
+        while time.time() - start < 3.0:
+            time.sleep(0.05)
+        user32.GetCursorPos(ctypes.byref(pt))
+        root.deiconify()
+        r = wt.RECT()
+        user32.GetWindowRect(g, ctypes.byref(r))
+        rx, ry = pt.x - r.left, pt.y - r.top
+        if not (0 <= rx < (r.right - r.left) and 0 <= ry < (r.bottom - r.top)):
+            set_status("Con tro ngoai cua so game")
+            return None
+        return (rx, ry)
+
+    def li_run_clicked():
+        if LI_BUSY[0]:
+            set_status("Login dang chay."); return
+        if TRAIN_ACTIVE[0]:
+            set_status("Train dang chay — dung Train truoc."); return
+        cfg = load_li_cfg()
+        accs = li_snapshot_accounts()
+        li_save_accounts(cfg, accs)
+        if not [a for a in accs if a["user"] and a["enabled"]]:
+            set_status("Chua co account nao."); return
+        threading.Thread(target=li_run_all,
+                         args=(cfg, accs, lambda s: set_status(s)),
+                         daemon=True).start()
+
+    li_render_accounts(li_load_accounts(load_li_cfg()))
 
     # --- Cap nhat toa do + ten/level hien tai (1s/lan) ---
     LIVE_POS = [None, None]
