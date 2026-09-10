@@ -634,6 +634,23 @@ def _window_at(x, y):
         return None
 
 
+def guard_foreground(hwnd, what=""):
+    """TRUOC moi thao tac phim/chuot: neu cua so hwnd KHONG con la
+    foreground → lap tuc SetForegroundWindow/BringWindowToTop lai (focus_game)
+    va kiem tra lan 2. Khong lay lai duoc → False (goi TU CHOI thao tac,
+    tranh phim/chuot roi vao cua so khac = di lech huong)."""
+    if not hwnd or not user32.IsWindow(hwnd):
+        return False
+    for _ in range(3):
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+        focus_game(hwnd)
+        time.sleep(0.10)
+    log_arrive(f"  {what}: mat focus cua so {hwnd:#x}, KHONG lay lai duoc — "
+               f"bo qua thao tac")
+    return False
+
+
 def click_at(sx, sy, right=False, hwnd=None):
     """Click vao vi tri man hinh (sx,sy) bang SetCursorPos + mouse_event.
     mouse_event la input TOAN CUC: click roi vao cua so NAM DUOI con tro.
@@ -790,8 +807,10 @@ def _release_vk(vk, ext=False):
 
 
 def send_home(hwnd=None):
-    """Gui phim Home (Helper). Dam bao dung cua so game dang foreground."""
-    _ensure_foreground(hwnd)
+    """Gui phim Home (Helper). Chi gui khi giu duoc focus cua so that."""
+    hwnd = hwnd or ACTIVE_HWND[0]
+    if not guard_foreground(hwnd, "Home"):
+        return
     time.sleep(0.10)
     _tap_vk(0x24)                               # VK_HOME
 
@@ -886,8 +905,10 @@ def send_ctrl_f(hwnd=None):
     Dam bao foreground: hwnd thieu -> dung cua so ACTIVE; khong focus duoc
     -> log canh bao (phim se roi vao cua so khac)."""
     hwnd = hwnd or ACTIVE_HWND[0]
-    if not _ensure_foreground(hwnd):
-        log_arrive(f"  Ctrl+F: KHONG focus duoc cua so {hwnd:#x} — phim co the roi vao noi khac!")
+    if not guard_foreground(hwnd, "Ctrl+F"):
+        log_arrive(f"  Ctrl+F: khong giu duoc focus {hwnd} — "
+                   f"bo qua de tranh phim roi vao cua so khac!")
+        return
     time.sleep(0.10)
     scan_ctrl = user32.MapVirtualKeyW(0x11, 0)  # VK_CONTROL
     scan_f = user32.MapVirtualKeyW(0x46, 0)     # VK_F
@@ -1228,7 +1249,7 @@ def main():
     else:
         root = tk.Tk()
     root.title("MU GOTO")
-    root.geometry("560x560")
+    root.geometry("280x620")
     root.resizable(False, False)   # kich thuoc CO DINH -> layout on dinh
 
     # --- Theme macOS ---
@@ -1329,10 +1350,10 @@ def main():
                else tk.Frame(root, bg=BG))
     top_bar.grid(row=0, column=0, sticky="ew", padx=PAD, pady=(PAD, 6))
 
-    # --- Nut Train cung hang voi cac tab (height=30 + font nhu header tab) ---
-    btn_train = btn_primary(top_bar, "▶  Train", height=30, font=f_body,
+    # --- Nut Train: CHAN ICON, rong ~20% cu (du 3 tab vua chieu ngang 256px) ---
+    btn_train = btn_primary(top_bar, "▶", width=26, height=26, font=f_body,
                             command=lambda: toggle_train())
-    btn_train.pack(side="left", padx=(0, 10))
+    btn_train.pack(side="left", padx=(0, 8))
 
     content = (ctk.CTkFrame(root, fg_color="transparent") if USE_CTK
                else tk.Frame(root, bg=BG))
@@ -1357,11 +1378,11 @@ def main():
                 b.configure(bg=ACCENT if sel else CARD,
                             fg="#FFFFFF" if sel else TEXT)
 
-    for key, txt in (("ctrl", "Account"), ("cfg", "Cấu hình"),
+    for key, txt in (("ctrl", "Acc"), ("cfg", "Config"),
                      ("log", "Log")):
         if USE_CTK:
-            b = ctk.CTkButton(top_bar, text=txt, font=f_body, height=30,
-                              width=92, corner_radius=6,
+            b = ctk.CTkButton(top_bar, text=txt, font=f_body, height=26,
+                              width=52, corner_radius=6,
                               command=lambda k=key: show_tab(k))
         else:
             b = tk.Button(top_bar, text=txt, font=f_body, relief="flat", bd=0,
@@ -1727,37 +1748,26 @@ def main():
             root.after(0, _do)
         except Exception:
             pass
-    # ===== TAB CAU HINH — thiet ke lai theo cong thuc cot co dinh =====
-    # Card log ~536px: le 12 moi ben -> 512. 4 cot x 110 + 3 keo gian x 10
-    # + nut "+" 30 + gian 10 = 510. Moi widget DROP co rong 110px.
-    CELL_W = 110
-    GAP = 10
-    PLUS_W = 30
+    # ===== TAB CONFIG — luu 5 GRID doc; moi grid: Map/Spot hang tren,
+    # Min/Max hang duoi; chieu rong grid = chieu rong card (50% cu). =====
     main_col = (ctk.CTkFrame(content, fg_color="transparent") if USE_CTK
                 else tk.Frame(content, bg=BG))
     TABS["cfg"] = main_col
     if USE_CTK:
         main_col.grid_columnconfigure(0, weight=1)
-        main_col.grid_rowconfigure(2, weight=1)
+        main_col.grid_rowconfigure(0, weight=1)
     else:
         main_col.columnconfigure(0, weight=1)
-        main_col.rowconfigure(2, weight=1)
+        main_col.rowconfigure(0, weight=1)
 
-    # -- Card 1: 5 dong [Map | Spot | Min | Max | +] --
+    GAP = 6
+    CELL_W = 112          # = 1/2 chieu rong card tru le → 2 cot/xen Map|Spot, Min|Max
+    HALF = (GAP // 2, GAP // 2)
+    ROW_PADY = (0, 6)
     N_ROWS = 5
-    pick = card(main_col)
-    pick.grid(row=0, column=0, sticky="ew", padx=PAD, pady=(PAD, 8))
-    for c in range(4):
-        pick.grid_columnconfigure(c, weight=0, minsize=CELL_W)
-    pick.grid_columnconfigure(4, weight=0, minsize=PLUS_W)
-    HALF = (GAP // 2, GAP // 2)   # 2 nua le = 1 keo gian 10px giua 2 cot
-    ROW_PADY = (0, 4)
-
-    def _hdr(c, t):
-        label(pick, t, f_sub, text_color=MUTED).grid(
-            row=0, column=c, sticky="ew", padx=HALF, pady=(10, 4))
-    for c, t in enumerate(("Map", "Spot", "Min", "Max")):
-        _hdr(c, t)
+    inner = (ctk.CTkFrame(main_col, fg_color="transparent") if USE_CTK
+             else tk.Frame(main_col, bg=BG))
+    inner.grid(row=0, column=0, sticky="nsew", padx=PAD, pady=(PAD, PAD))
 
     mv_sel = [0] * N_ROWS     # chi muc /move dang chon cua tung dong
     sp_sel = [None] * N_ROWS  # chi muc spot dang chon cua tung dong
@@ -1765,6 +1775,63 @@ def main():
     sp_drops = []
     min_vars = []             # tk.StringVar level min tung dong
     max_vars = []             # tk.StringVar level max tung dong
+
+    # Khoi phuc cai dat lan truoc (TRUOC khi tao card — card doc min_vars[r]).
+    cfg = load_cfg()
+    for r in range(N_ROWS):
+        if r < len(cfg):
+            try:
+                mv_sel[r] = max(0, min(len(MOVE_COMMANDS) - 1, int(cfg[r][0])))
+                s = cfg[r][1]
+                sp_sel[r] = None if s is None else int(s)
+                min_vars.append(tk.StringVar(value=str(cfg[r][2] if len(cfg[r]) > 2 else "")))
+                max_vars.append(tk.StringVar(value=str(cfg[r][3] if len(cfg[r]) > 3 else "")))
+                continue
+            except Exception:
+                pass
+        min_vars.append(tk.StringVar(value=""))
+        max_vars.append(tk.StringVar(value=""))
+
+    # -- 5 card nho, moi card: [Map | Spot] hang tren, [Min | Max] hang duoi --
+    for r in range(N_ROWS):
+        g = card(inner)
+        g.pack(fill="x", padx=2, pady=4)
+        for c in range(2):
+            g.grid_columnconfigure(c, weight=1, uniform=f"g{r}")
+        label(g, "Map", f_small, text_color=MUTED).grid(
+            row=0, column=0, sticky="w", padx=8, pady=(4, 0))
+        label(g, "Spot", f_small, text_color=MUTED).grid(
+            row=0, column=1, sticky="w", padx=8, pady=(4, 0))
+        mvd = MapDropList(g, "Map", width=10, compact=True, btn_px=CELL_W)
+        mv_drops.append(mvd)
+        mvd.on_select = lambda i, r=r: pick_move(r, i)
+        mvd.head.grid(row=1, column=0, sticky="ew", padx=HALF, pady=(0, 2))
+        spd = MapDropList(g, "Spot", width=10, compact=True, btn_px=CELL_W)
+        sp_drops.append(spd)
+        spd.on_select = lambda i, r=r: pick_spot(r, i)
+        spd.head.grid(row=1, column=1, sticky="ew", padx=HALF, pady=(0, 2))
+        label(g, "Min", f_small, text_color=MUTED).grid(
+            row=2, column=0, sticky="w", padx=8)
+        label(g, "Max", f_small, text_color=MUTED).grid(
+            row=2, column=1, sticky="w", padx=8)
+        vmin, vmax = min_vars[r], max_vars[r]
+        if USE_CTK:
+            e_min = ctk.CTkEntry(g, textvariable=vmin, height=26,
+                                 font=f_body, border_color=BORDER,
+                                 fg_color="#FAFAFA", justify="center")
+            e_max = ctk.CTkEntry(g, textvariable=vmax, height=26,
+                                 font=f_body, border_color=BORDER,
+                                 fg_color="#FAFAFA", justify="center")
+        else:
+            e_min = tk.Entry(g, textvariable=vmin, font=f_body,
+                             relief="solid", bd=1, bg="#FAFAFA", justify="center")
+            e_max = tk.Entry(g, textvariable=vmax, font=f_body,
+                             relief="solid", bd=1, bg="#FAFAFA", justify="center")
+        e_min.grid(row=3, column=0, sticky="ew", padx=HALF, pady=(0, 6))
+        e_max.grid(row=3, column=1, sticky="ew", padx=HALF, pady=(0, 6))
+        # Luu moi khi sua Min/Max (nut "+" da bo — grid tu luu).
+        vmin.trace_add("write", lambda *a: persist_rows())
+        vmax.trace_add("write", lambda *a: persist_rows())
 
     def refresh_map_row(r):
         names = [t for (t, _) in MOVE_COMMANDS]
@@ -1959,78 +2026,11 @@ def main():
         send_ctrl_f_on(hwnd)
         return "visit"
 
-    # Cua so CO DINH -> cot khoa bang pixel o tren (87px deu nhau).
-
-    # Khoi phuc cai dat lan truoc (neu co).
-    cfg = load_cfg()
-    for r in range(N_ROWS):
-        if r < len(cfg):
-            try:
-                mv_sel[r] = max(0, min(len(MOVE_COMMANDS) - 1, int(cfg[r][0])))
-                s = cfg[r][1]
-                sp_sel[r] = None if s is None else int(s)
-                min_vars.append(tk.StringVar(value=str(cfg[r][2] if len(cfg[r]) > 2 else "")))
-                max_vars.append(tk.StringVar(value=str(cfg[r][3] if len(cfg[r]) > 3 else "")))
-                continue
-            except Exception:
-                pass
-        min_vars.append(tk.StringVar(value=""))
-        max_vars.append(tk.StringVar(value=""))
-
-    for r in range(N_ROWS):
-        # Dropdow rong CO DINH 87px (khong gian theo cot).
-        mvd = MapDropList(pick, "Map", width=14, compact=True, btn_px=CELL_W)
-        mv_drops.append(mvd)
-        mvd.on_select = lambda i, r=r: pick_move(r, i)
-        mvd.head.grid(row=1 + r, column=0, padx=HALF, pady=ROW_PADY)
-        spd = MapDropList(pick, "Spot", width=10, compact=True, btn_px=CELL_W)
-        sp_drops.append(spd)
-        spd.on_select = lambda i, r=r: pick_spot(r, i)
-        spd.head.grid(row=1 + r, column=1, padx=HALF, pady=ROW_PADY)
-        # 2 entry Level Min / Max cho dong nay (rong 87px)
-        vmin, vmax = min_vars[r], max_vars[r]
-        if USE_CTK:
-            e_min = ctk.CTkEntry(pick, textvariable=vmin, width=CELL_W, height=28,
-                                 font=f_body, border_color=BORDER, fg_color="#FAFAFA",
-                                 justify="center")
-            e_max = ctk.CTkEntry(pick, textvariable=vmax, width=CELL_W, height=28,
-                                 font=f_body, border_color=BORDER, fg_color="#FAFAFA",
-                                 justify="center")
-        else:
-            e_min = tk.Entry(pick, textvariable=vmin, width=11, font=f_body,
-                             relief="solid", bd=1, bg="#FAFAFA", justify="center")
-            e_max = tk.Entry(pick, textvariable=vmax, width=11, font=f_body,
-                             relief="solid", bd=1, bg="#FAFAFA", justify="center")
-        e_min.grid(row=1 + r, column=2, padx=HALF, pady=ROW_PADY)
-        e_max.grid(row=1 + r, column=3, padx=HALF, pady=ROW_PADY)
-        # Nut "+" luu toa do — cot 5, ngoai 4 cot chinh
-        if USE_CTK:
-            ctk.CTkButton(pick, text="+", width=PLUS_W, height=28,
-                          corner_radius=8, font=f_btn,
-                          fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                          text_color="#FFFFFF",
-                          command=lambda r=r: save_spot(r)).grid(
-                row=1 + r, column=4, padx=(GAP // 2, 0), pady=ROW_PADY)
-        else:
-            tk.Button(pick, text="+", font=f_btn, width=2,
-                      bg=ACCENT, fg="#FFFFFF", activebackground=ACCENT_HOVER,
-                      activeforeground="#FFFFFF", relief="flat", bd=0,
-                      command=lambda r=r: save_spot(r)).grid(
-                row=1 + r, column=4, padx=(GAP // 2, 0), pady=ROW_PADY)
-        # Luu moi khi sua Min/Max.
-        vmin.trace_add("write", lambda *a: persist_rows())
-        vmax.trace_add("write", lambda *a: persist_rows())
-
     refresh_all()
 
-    # --- Nut Reset + Chup anh: duoi Grid, trong tab Cau hinh ---
-    btn_reset = btn_secondary(main_col, "↺  Reset",
-                              command=lambda: toggle_reset())
-    btn_reset.grid(row=1, column=0, sticky="ew", padx=PAD, pady=(0, 4))
-    btn_cap = btn_secondary(main_col, "📷  Chụp ảnh",
-                            command=open_capture_dialog)
-    btn_cap.grid(row=2, column=0, sticky="ew", padx=PAD, pady=(0, PAD))
-    btn_reset.bind("<Button-3>", open_reset_dialog)
+    # Nut Reset + Chup anh DA BO theo yeu cau: Reset TU chay khi dat Lv trong
+    # vong train; template Helper/Giam tai nam tren file (muon doi thi thay
+    # file PNG tuong ung — ham capture_icon van giu lai trong code).
 
     # ---------- TAB LOG: chi 1 vien ngoai, khong scrollbar, cuon lan chuot ---
     log_card = card(content)
@@ -2131,25 +2131,22 @@ def main():
             log_add("  lenh: chua co cua so game dang mo — HOAN gui lenh "
                     "(mo game / chon cua so o tab Account truoc).")
             return False
-        if not _ensure_foreground(wh):
+        if not guard_foreground(wh, "lenh"):
             log_add("  lenh: khong focus duoc cua so game — HOAN gui lenh.")
             return False
         time.sleep(0.10)
         _tap_vk(0x0D); time.sleep(0.25)             # Enter mo khung chat
-        if user32.GetForegroundWindow() != wh:
-            log_add("  lenh: cua so game bi mat focus khi mo chat — "
-                    "khong dan, chuyen go truc tiep.")
-            type_unicode(cmd)
-            time.sleep(0.15)
-            _tap_vk(0x0D); time.sleep(0.15)
-            return True
-        # 3 lan: copy -> verify -> (kiem tra lai focus) -> verify NGAY -> dan
+        if not guard_foreground(wh, "lenh/sau-enter"):
+            log_add("  lenh: mat focus khi mo chat — HOAN gui lenh "
+                    "(khong dan/go vao cua so khac).")
+            return False
+        # 3 lan: copy -> verify -> (giu focus) -> verify NGAY -> dan
         pasted = False
         for _ in range(3):
             if not copy_to_clipboard(cmd):
                 time.sleep(0.1)
                 continue
-            if read_clipboard() != cmd or user32.GetForegroundWindow() != wh:
+            if read_clipboard() != cmd or not guard_foreground(wh, "lenh/truoc-dan"):
                 time.sleep(0.1)
                 continue
             if read_clipboard() != cmd:             # doc lan cuoi sat gio dan
@@ -2160,11 +2157,14 @@ def main():
                 log_add(f"  [canh bao] clipboard BI GIAO DICH sau khi dan — "
                         f"noi dung dan ra co the sai (lenh: {cmd!r})")
             break
-        if not pasted:
+        if not pasted and guard_foreground(wh, "lenh/fallback"):
             log_add("  clipboard kh xac minh duoc -> go truc tiep (SendInput)")
             type_unicode(cmd)
         time.sleep(0.15)
-        _tap_vk(0x0D); time.sleep(0.15)             # Enter gui
+        if guard_foreground(wh, "lenh/Enter-gui"):
+            _tap_vk(0x0D); time.sleep(0.15)         # Enter gui
+        else:
+            log_add("  lenh: mat focus luc Enter — lenh co the chua duoc gui.")
         return True
 
     def type_move_command(tok):
@@ -2190,22 +2190,8 @@ def main():
     RESET_ACTIVE = [False]
 
     def set_reset_active(active):
-        """Xanh duong khi nghi, DO khi Reset dang chay."""
-        def _do():
-            if USE_CTK:
-                btn_reset.configure(
-                    fg_color=DANGER if active else "#F2F2F7",
-                    hover_color="#FF453A" if active else "#E5E5EA",
-                    text_color="#FFFFFF" if active else TEXT)
-            else:
-                btn_reset.configure(
-                    bg=DANGER if active else "#F2F2F7",
-                    fg="#FFFFFF" if active else TEXT,
-                    activebackground="#FF453A" if active else "#E5E5EA")
-        try:
-            root.after(0, _do)
-        except Exception:
-            pass
+        """Nut Reset da bo — chi log trang thai (train tu reset khi Lv >= max)."""
+        log_add(f"  Reset {'dang chay' if active else 'ket thuc'}.")
 
     RESET_STOP = [False]
 
