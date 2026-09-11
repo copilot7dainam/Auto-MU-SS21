@@ -49,18 +49,16 @@ Cửa sổ **cố định 280×520**, phong cách macOS. Hàng đầu: nút **�
 ### Tab "RR" — Điều khiển
 - **▶ Train** — bật/tắt chuỗi train tự động (nhấn lần 1 chạy, nhấn lần 2 dừng).
   Xanh dương khi nghỉ → **xanh lá** khi đang chạy.
-- **↺ Reset** — hẹn lịch reset stat: chỉ chạy khi nhân vật đạt **Lv 400**.
-  Nút **đỏ** khi đang chờ/đang chạy; nhấn lần 2 để hủy.
-  **Chuột phải** vào nút → modal nhập 5 điểm cộng (str/agi/vit/ene/cmd).
-- **📷 Camera** — modal chọn ảnh cần chụp, xem trước ảnh đã lưu:
-  - **Helper** — icon khi Helper đang bật.
-  - **Giảm tải** — icon khi Giảm tải đang bật.
-  - **Chế độ đơn giản — ảnh A** — ảnh chỉ báo chế độ đơn giản ĐÃ BẬT.
-  - **Điểm B** — phủ màn hình trong suốt, **bấm 1 điểm** đúng nút bật đơn giản
-    trong game → tool lưu tọa độ (tương đối client) vào config.
-- **Thanh tiến trình** — mỗi cửa sổ game là **1 bar** bo tròn: fill **xanh lá**
-  theo level, **đỏ khi đủ Lv 400**; tên + Lv nằm **bên trong** bar. Tự
-  thêm/xóa bar khi mở/đóng game. Chấm **vàng** = cửa sổ đang được duyệt.
+- Reset stat **tự động** khi train chạm Lv 400 (không còn nút hẹn — cấu hình
+  điểm cộng ở nút **➕ Add Point** trong tab Log).
+- **Thanh tiến trình** — **lưới 10 hàng cố định**, mỗi nhân vật **1 hàng duy
+  nhất không bao giờ đổi chỗ**: slot gắn theo **tên nhân vật** (relogin sinh
+  hwnd mới vẫn về đúng hàng cũ), không phụ thuộc thứ tự Z-order cửa sổ. Bar bo
+  tròn cao đúng 1/10 grid; fill **xanh lá** theo level, **đỏ khi đủ Lv 400**;
+  tên + Lv nằm **bên trong** bar. **Chấm trạng thái vẽ trong bar, đè trên
+  đầu thanh tiến trình**: **đỏ** = cửa sổ đang được duyệt/thao tác, **xanh** =
+  cửa sổ sống chưa duyệt. Hàng trống giữ chỗ (không giãn hàng khác). Nền **xanh
+  lá nhạt** = cửa sổ đang bind với một tài khoản LI.
 
 ### Tab "Spot" — Cấu hình chuỗi train
 - **1 grid choán toàn tab**, hàng đầu = dropdown **Account**: chọn "(Chung)" hoặc
@@ -75,6 +73,15 @@ Cửa sổ **cố định 280×520**, phong cách macOS. Hàng đầu: nút **�
   trên, **log tiến trình** dưới. Kéo con lăn chuột để xem log cũ.
 - Lịch sử reset ghi gọn: `Tên reset ( avg X phút / N lần )`.
 - Đường đi **không** in từng điểm — chỉ báo **DEN NOI** khi tới nơi.
+- **➕ Add Point** — modal danh sách lệnh `/add`, **kéo hàng ⋮⋮ để đổi thứ tự
+  chạy** (thả chuột là lưu ngay); checkbox `auto` + ô điểm từng stat; nút **Lưu**
+  đóng dialog. Chuỗi reset chạy đúng thứ tự hiển thị ở đây.
+- **📷 Camera** — modal chọn ảnh cần chụp, xem trước ảnh đã lưu:
+  - **Helper** — icon khi Helper đang bật.
+  - **Giảm tải** — icon khi Giảm tải đang bật.
+  - **Chế độ đơn giản — ảnh A** — ảnh chỉ báo chế độ đơn giản ĐÃ BẬT.
+  - **Điểm B** — phủ màn hình trong suốt, **bấm 1 điểm** đúng nút bật đơn giản
+    trong game → tool lưu tọa độ (tương đối client) vào config.
 
 ### Tab "LI" — Auto-login
 - **➕ Account** — modal nhập đầy đủ tài khoản **trùng kích thước + vị trí cửa sổ
@@ -97,7 +104,7 @@ Cửa sổ **cố định 280×520**, phong cách macOS. Hàng đầu: nút **�
 Launcher: đã tồn tại (ke ca minimize) → maximize + active → bấm Play → minimize
           chưa tồn tại                → mới mở exe duy nhất 1 lần
 → chờ của số game MOI → chờ ảnh Credit (load xong)
-→ bam Login → bam Server N → paste user / Tab / pass / Enter
+→ bam Login → bam Server N → GO TUNG PHIM user / Tab / pass / Enter (khong clipboard — MU cache mat khau Vinh Vien)
 → tim anh Connect → bam → bam P1..P4 (bo qua neu chua cau hinh)
 → DOI TITLE = [Char:..] xac nhan da vo WORLD → Ctrl+F bat Giam tai (verify icon)
 ```
@@ -127,7 +134,12 @@ vật chạy chuỗi riêng theo **Lv của chính nó** + cấu hình riêng th
 ```
 
 - **Không thao tác chuột thừa**: ghé cửa sổ mà nhân vật đang đứng đúng bãi +
-  Giảm tải đang bật → chỉ đọc Lv rồi đi, **không click gì**.
+  Giảm tải đang bật → chỉ đọc Lv rồi đi, **không click gì** — nhưng có chốt
+  chống "đúng spot giả": tọa độ đọc từ memory **chỉ cập nhật khi có thao tác
+  trong client**, nên tool đồng thời **so map hiện tại với map của bãi** (sai
+  map = bắt buộc về lại bãi, không cần click), và **tối đa 5 lượt fast-path
+  liên tiếp** rồi buộc click điểm (400,300) + đọc `pos_stable` xác minh lại —
+  nhân vật bị lôi/chết về thị trấn không thể bị tưởng nhầm còn đứng tại bãi.
 - Ctrl+F và Home đều là **toggle** → tool **kiểm tra trạng thái bằng hình ảnh
   TRƯỚC khi bấm**, bấm tối đa 1 lần mỗi lượt kiểm tra, nghỉ tối đa 10 lần →
   không bao giờ bật/tắt nhầm.
@@ -149,7 +161,11 @@ vật chạy chuỗi riêng theo **Lv của chính nó** + cấu hình riêng th
   **không** reset, **không** chạy bước kế tiếp.
 - Mỗi click xác minh **cửa sổ dưới con trỏ đúng là cửa sổ đang làm việc**
   (WindowFromPoint + BringWindowToTop) — chống thao tác nhầm cửa sổ khi nhiều
-  game chồng nhau.
+  game chồng nhau. **Kéo lên đỉnh 3 lần vẫn bị che → THẢ click** (bỏ qua bước,
+  vòng sau thử lại) — bấm nhầm cửa sổ khác tốn hại hơn mất 1 bước.
+- Mỗi lệnh chat đi qua **5 lớp guard focus** (trước Enter, sau Enter, trước dán,
+  Enter gửi…) — mất focus ở bất kỳ bước nào = **không coi là đã gửi**, thử lại
+  tối đa 3 vòng, mỗi vòng Esc dọn ô chat dở dang.
 - Toạ độ khớp ảnh được quy chiếu **window-relative** (trừ offset title bar) →
   click trúng tâm nút, không lệch.
 
@@ -173,10 +189,13 @@ vật chạy chuỗi riêng theo **Lv của chính nó** + cấu hình riêng th
 
 ## 7. Reset stat
 
-- Bấm nút Reset = **hẹn giờ**: chỉ chạy khi Lv 400 (nhấn lần 2 để hủy).
 - Đạt Lv 400 trong lúc Train = **tự động** chạy chuỗi, xong quay lại dòng 1.
-- Chuỗi: `/reset` (chờ 5s) → `/addagi auto 32000` **trước**, rồi
-  `/addstr|ene|vit|cmd auto 32000` → các lệnh `/add... <điểm>` theo cấu hình.
+  Không còn nút hẹn Reset.
+- Chuỗi: `/reset` (chờ 5s) → từng lệnh `/add...` **cách nhau 1s**, thứ tự chạy
+  = đúng thứ tự danh sách trong modal **➕ Add Point** (kéo ⋮⋮ để đổi). Mặc định:
+  5 dòng `/addstr|agi|vit|ene|cmd 500` rồi 5 dòng `auto 32000`.
+- **Lệnh không gửi được = chuỗi dừng ngay** và **không ghi lịch sử** — không
+  bao giờ báo "reset xong" giả khi /reset đã chạy mà thiếu lệnh /add.
 
 ## 8. Quyền chuột & an toàn
 
@@ -192,7 +211,7 @@ vật chạy chuỗi riêng theo **Lv của chính nó** + cấu hình riêng th
 
 | File | Nội dung |
 |------|----------|
-| `mu_goto_cfg.json` | 5 dòng "(Chung)" (định dạng cũ) |
+| `mu_goto_cfg.json` | 5 dòng "(Chung)" + `add_lines` (danh sách & thứ tự lệnh /add, sửa bằng kéo thả ở ➕ Add Point) |
 | `mu_goto_li.json` | Tài khoản LI + launcher + template + tọa độ Login/S1-5/P1-4 |
 | `mu_goto_spots.json` | Danh sách tọa độ /move đã lưu theo map |
 | `rows_map` (trong cfg) | 5 dòng train **riêng từng account** |

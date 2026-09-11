@@ -305,6 +305,13 @@ _seed_bundled_files()
 # Diem cong khi Reset (sua bang chuot PHAI vao nut Reset).
 RESET_POINTS = {"str": 500, "agi": 500, "vit": 500, "ene": 500, "cmd": 500}
 
+# Danh sach lenh /add khi Reset (sua + keo tha doi thu tu trong modal
+# "Add Point"). thu tu list = thu tu chay that. auto=True → "/addX auto N".
+ADD_STATS = ("str", "agi", "vit", "ene", "cmd")
+ADD_LINES = [{"stat": k, "val": 500, "auto": False} for k in ADD_STATS] + \
+            [{"stat": k, "val": 32000, "auto": True} for k in
+             ("agi", "str", "ene", "vit", "cmd")]
+
 def _cfg_dict():
     """Toan bo dict config (giu nguyen cac key khac khi ghi)."""
     try:
@@ -326,6 +333,24 @@ def load_cfg():
             RESET_POINTS[k] = int(pts.get(k, RESET_POINTS[k]))
         except (TypeError, ValueError):
             pass
+    ad = d.get("add_lines")
+    if isinstance(ad, list) and ad:
+        clean = []
+        for ln in ad:
+            try:
+                st = str(ln.get("stat"))
+                if st in ADD_STATS:
+                    clean.append({"stat": st,
+                                  "val": max(0, int(ln.get("val", 0))),
+                                  "auto": bool(ln.get("auto"))})
+            except Exception:
+                pass
+        if clean:
+            ADD_LINES[:] = clean
+    elif pts:                       # cfg cu (chi co reset_points) → migrate
+        ADD_LINES[:] = [
+            {"stat": k, "val": RESET_POINTS[k], "auto": False}
+            for k in ADD_STATS] + [ln for ln in ADD_LINES if ln["auto"]]
     return d.get("rows", [])
 
 
@@ -336,6 +361,17 @@ def save_cfg(rows):
         d["rows"] = rows
         d["reset_points"] = RESET_POINTS
         d.pop("simple_b", None)
+        json.dump(d, open(CFG_FILE, "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def save_add_lines():
+    """Ghi ADD_LINES (thu tu + noi dung lenh /add) vao CFG_FILE, giu key khac."""
+    try:
+        d = _cfg_dict()
+        d["add_lines"] = [dict(ln) for ln in ADD_LINES]
         json.dump(d, open(CFG_FILE, "w", encoding="utf-8"),
                   ensure_ascii=False, indent=2)
     except Exception:
@@ -703,8 +739,8 @@ def click_at(sx, sy, right=False, hwnd=None):
     mouse_event la input TOAN CUC: click roi vao cua so NAM DUOI con tro.
     → Voi nhieu cua so game CHONG NHAU, phai kiem tra cua so duoi con tro
     DUNG LA hwnd (cua so dang lam viec) truoc khi bam; bi che -> keo no len
-    dinh (focus_game) roi kiem tra lai, toi da 3 lan. Neu van bi che thi
-    VAN bam (khong the lam khac) + log canh bao."""
+    dinh (focus_game) roi kiem tra lai, toi da 3 lan. Van bi che → THA click
+    (return False) — bam nham cua so khac ton hai hon bo qua 1 buoc."""
     sx, sy = int(sx), int(sy)
     if hwnd:
         for _ in range(3):
@@ -715,8 +751,11 @@ def click_at(sx, sy, right=False, hwnd=None):
             focus_game(hwnd)                    # keo dung cua so len dinh
             time.sleep(0.12)
         else:
+            # VAN bam = click roi vao cua so choi ngan (nhan vat cua so khac
+            # bo di). THA click: vong lap tren (goto/retry) se thu lai.
             log_arrive(f"  click: cua so {hwnd:#x} van bi che tai ({sx},{sy})"
-                       f" — click co the roi vao cua so khac!")
+                       f" — BO QUA click (an toan hon bam nham cua so khac)")
+            return False
     else:
         user32.SetCursorPos(sx, sy)
         time.sleep(0.02)
@@ -725,6 +764,7 @@ def click_at(sx, sy, right=False, hwnd=None):
     user32.mouse_event(down, 0, 0, 0, 0)
     time.sleep(0.04)
     user32.mouse_event(up, 0, 0, 0, 0)
+    return True
 
 
 # --- Chan thao tac chuot VAT LY cua nguoi dung khi App dang su dung ---
@@ -732,7 +772,8 @@ def click_at(sx, sy, right=False, hwnd=None):
 # (App) co flag -> cho qua; su kien chuot that -> return 1 (nuot). Ban phim
 # KHONG bi chan -> PgUp van dung duoc tool. Hook phai cai o main thread
 # (tkinter mainloop pump message cho no).
-MOUSE_BLOCK = [False]
+MOUSE_BLOCK = [0]   # reference count: >0 = chan chuot vat ly (goto/train/reset
+                    # long nhau → phai dem, ai sau cung moi duoc tat)
 class MSLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [("pt", wt.POINT), ("mouseData", wt.DWORD), ("flags", wt.DWORD),
                 ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_void_p)]
@@ -821,7 +862,10 @@ def _ensure_foreground(hwnd, tries=3):
     if not hwnd:
         return True
     for _ in range(tries):
-        if user32.GetForegroundWindow() == hwnd:
+        # same standard nhu guard_foreground: check STRICT == bao 'mat focus'
+        # GIA khi o chat/IME (cua so con cung pid) dang foreground → lan ra
+        # Alt-trick khong can thiet, co the lam dong o chat.
+        if _fg_is_ok(hwnd):
             return True
         focus_game(hwnd)
         time.sleep(0.15)
@@ -1129,11 +1173,15 @@ def li_click_rel(hwnd, x, y):
         sx, sy = r.left + int(x), r.top + int(y)
         time.sleep(0.3)
     if not ok:
-        log_arrive(f"  [LI] click ({x},{y}): cua so khong nam duoi tro sau 8s — van bam")
+        # nhu click_at: bam khi chua nam duoi tro = click nham noi khac
+        log_arrive(f"  [LI] click ({x},{y}): cua so khong nam duoi tro sau 8s"
+                   f" — BO QUA click")
+        return False
     down = 0x0002
     user32.mouse_event(down, 0, 0, 0, 0)
     time.sleep(0.05)
     user32.mouse_event(0x0004, 0, 0, 0, 0)
+    return True
 
 
 def li_wait_img_click(hwnd, key, timeout=LI_IMG_TIMEOUT):
@@ -1155,9 +1203,10 @@ def li_wait_img_click(hwnd, key, timeout=LI_IMG_TIMEOUT):
                 stable = 0
             last = hit
             if stable >= 1:
-                li_click_rel(hwnd, hit[0], hit[1])
-                time.sleep(LI_STEP_PAUSE)
-                return True
+                if li_click_rel(hwnd, hit[0], hit[1]):
+                    time.sleep(LI_STEP_PAUSE)
+                    return True
+                last, stable = None, 0   # click bi BO QUA → cho on dinh lai
         else:
             last, stable = None, 0
         time.sleep(0.8)
@@ -2211,21 +2260,27 @@ def main():
     BAR_H = 22
     BAR_R = 10
     PILL = "#F2F2F7"
+    BG_BIND = "#D1F2DB"      # nen XANH LA = cua so dang gan voi 1 account LI
     DOT_RED = "#FF3B30"
     DOT_GREEN = "#34C759"
 
     class Bar:
-        """Canvas bar trong pill: track tron #E9E9EE + fill theo Lv + chu DEN."""
+        """Canvas bar trong pill: track tron #E9E9EE + fill theo Lv + chu DEN.
+        Cham trang thai ve BEN TRONG bar (de tren fill) — fill bat dau tu dau
+        bar, chui qua duoi cham."""
         def __init__(self, parent):
             self.r = BAR_R
-            self._full_h = BAR_H
-            self.c = tk.Canvas(parent, width=100, height=self._full_h,
+            self.c = tk.Canvas(parent, width=100, height=BAR_H,
                                highlightthickness=0, bg=PILL)
             self.c.pack(side="left", fill="both", expand=True)
-            self._w = 100
+            self._w, self._h = 100, BAR_H   # kich thuoc THAT tu <Configure>
             self._pct = 0.0
             self._color = SUCCESS
             self._text = ""
+            self._dot = None        # mau cham trong bar; None = an
+            self._track = "#E9E9EE"
+            self._bg = PILL
+            self._sig = None        # lan ve gan nhat — thay doi moi ve lai
             self.c.bind("<Configure>", self._resize)
             self._draw()
 
@@ -2237,25 +2292,39 @@ def main():
                                          outline="")
 
         def _resize(self, evt):
-            self._w = evt.width
+            if evt.width == self._w and evt.height == self._h:
+                return
+            self._w, self._h = evt.width, evt.height
             self._draw()
 
         def _draw(self):
+            # ve LAI khi noi dung KHONG doi — tranh mat nhay 2s/lan cua sync
+            sig = (self._w, self._h, round(self._pct, 3), self._color,
+                   self._text, self._dot, self._track)
+            if sig == self._sig:
+                return
+            self._sig = sig
             self.c.delete("all")
-            w, h = self._w, self._full_h
+            w, h = self._w, self._h
             r = min(self.r, h // 2)
-            self._rrect(0, 0, w, h, r, "#E9E9EE")
+            self._rrect(0, 0, w, h, r, self._track)
             fw = int(w * self._pct)
             if fw > 2 * r:
                 self._rrect(0, 0, fw, h, r, self._color)
             elif fw > 0:
                 self.c.create_rectangle(0, 0, fw, h, fill=self._color,
                                         outline="")
+            tx = 8
+            if self._dot:
+                r0 = 4
+                self.c.create_oval(8, h / 2.0 - r0, 8 + 2 * r0, h / 2.0 + r0,
+                                   fill=self._dot, outline="")   # tren fill
+                tx = 24
             if self._text:
-                self.c.create_text(8, h / 2.0, anchor="w", text=self._text,
+                self.c.create_text(tx, h / 2.0, anchor="w", text=self._text,
                                    font=f_bar, fill=TEXT)
 
-        def set(self, p, color, text=None, active=None):
+        def set(self, p, color, text=None):
             self._pct = max(0.0, min(1.0, p))
             self._color = color
             if text is not None:
@@ -2263,55 +2332,71 @@ def main():
             self._draw()
 
         def set_h(self, h):
-            h = max(BAR_H, int(h))
-            if h != self._full_h:
-                self._full_h = h
-                self.c.configure(height=h)
-                self._draw()
+            """Cao YEU CAU; chieu cao THAT ve qua <Configure> (geometry
+            manager co the khac 1-2px → ve theo widget that, khong lech nen)."""
+            self.c.configure(height=max(BAR_H, int(h)))
+
+        def set_bg(self, bg, track):
+            """Doi nen pill (xanh = da bind account). Chi ve lai khi KHAC."""
+            if self._bg == bg:
+                return
+            self._bg, self._track = bg, track
+            self.c.configure(bg=bg)
+            self._draw()
+
+        def set_dot(self, color):
+            """Chon mau cham trong bar (khong ve — lan set() ke tiep ve luon)."""
+            self._dot = color
 
         def clear(self):
+            self._dot = None
             self.set(0.0, SUCCESS, "")
 
-    # Holder = slot deu (expand); trong holder: spacer tren/duoi weight →
-    # PILL nam giua, khoang cach gia cac pill DAU NHAU — y het LI.
+    # GRID 10 PHAN CO DINH: moi bar = 1 hang (weight deu), khong bao gio
+    # gian/ep theo so cua so mo → bar khong 'nhay' khi mo/dong cua so.
+    # Slot gan theo TEN NHAN VAT (khong phai hwnd) → relogin (hwnd moi)
+    # van giu nguyen vi tri. Pill an khi trong — hang van cho.
     SLOTS = []
     for _i in range(MAX_SLOTS):
         holder = tk.Frame(bars_frame, bg=CARD)
-        holder.pack(fill="both", expand=True)
-        tk.Frame(holder, bg=CARD).pack(fill="both", expand=True)
+        holder.grid(row=_i, column=0, sticky="nsew")
+        bars_frame.grid_rowconfigure(_i, weight=1, uniform="rrslot")
         box = tk.Frame(holder, bg=PILL)
-        box.pack(fill="x", padx=2)
-        dot = tk.Label(box, text="", font=f_bar, fg=DOT_GREEN, bg=PILL,
-                       width=2)
-        dot.pack(side="left")
+        box.pack(fill="x", expand=True, padx=2, pady=1)
         b = Bar(box)
-        tk.Frame(holder, bg=CARD).pack(fill="both", expand=True)
-        SLOTS.append({"frame": holder, "box": box, "bar": b, "dot": dot,
+        SLOTS.append({"frame": holder, "box": box, "bar": b, "name": None,
                       "hwnd": None})
+    bars_frame.grid_columnconfigure(0, weight=1)
 
     def _slot_release(sl):
+        # GIU "ten ma": do cua so dong (relogin → hwnd moi) thi cua so mang
+        # dung ten nay se quay ve chinh slot cu — vi tri co dinh, khong nhay.
         sl["hwnd"] = None
+        sl["bar"].set_dot(None)
         sl["bar"].clear()
 
-    def _slot_assign(hwnd):
+    def _slot_find_or_assign(hwnd, nm):
+        """On dinh hon Z-order/hwnd: cung ten → ve slot trong cu no.
+        (Match chi voi slot dang TRONG — 2 cua so trung ten khong tranh nhau.)"""
+        if nm:
+            for sl in SLOTS:
+                if sl["hwnd"] is None and sl["name"] == nm:
+                    sl["hwnd"] = hwnd
+                    return sl
         for sl in SLOTS:
-            if sl["hwnd"] is None:
+            if sl["hwnd"] is None and sl["name"] is None:
                 sl["hwnd"] = hwnd
+                sl["name"] = nm
                 return sl
         return None
 
-    BARS = {}          # hwnd -> Bar (bar dang gao cho cua so nay)
     bar = None         # bar cua cua so dang dieu khien (GHWND)
-    cur = None
+    VISIT_STREAK = {}  # hwnd -> so lan lien tiep fast-path 'o dung spot'
+                       # (run_visit): qua 5 → bat buoc click xac minh lai
 
     def bar_pct_color(lv):
         p = 0.0 if lv is None else max(0.0, min(1.0, (lv - 1) / (AUTO_RESET_LV - 1)))
         return p, (DANGER if (lv is not None and lv >= AUTO_RESET_LV) else SUCCESS)
-
-    def set_bar_pct(lv):
-        if bar is not None:
-            p, col = bar_pct_color(lv)
-            bar.set(p, col)
 
     def list_game_windows():
         """{hwnd: pid} cua moi cua so game main.exe dang hien."""
@@ -2340,59 +2425,52 @@ def main():
         return out
 
     def sync_bars():
-        """Gan cua so vao SLOT CO DINH; thu cho trong; vien xanh cho cua so
-        dang thao tac; an cac hang trong o CUOI (khong bao gio dot giua)."""
-        nonlocal bar, cur
+        """GRID 10 hang CO DINH — moi cua so 1 hang, vi tri gan theo TEN NHAN
+        VAT (relogin/hwnd moi khong doi cho). Bar khong bao gio cao qua 1/10
+        grid; hang trong van cho place-holder (khong gian hang khac)."""
+        nonlocal bar
         wins = list_game_windows()
         # thu cho cua so da dong — giu nguyen vi tri cac hang khac
         for sl in SLOTS:
             if sl["hwnd"] is not None and sl["hwnd"] not in wins:
                 _slot_release(sl)
-        # gan cua so moi vao cho trong dau tien
+        # gan cua so moi — theo ten, khong theo Z-order EnumWindows (nhay loi)
         have = {sl["hwnd"] for sl in SLOTS if sl["hwnd"] is not None}
         for hwnd in wins:
             if hwnd not in have:
-                _slot_assign(hwnd)
-        BARS.clear()
-        bar = cur = None
-        n_vis = sum(1 for sl in SLOTS if sl["hwnd"] is not None)
+                nm0, _ = read_title(hwnd)
+                _slot_find_or_assign(hwnd, nm0)
+        bar = None
+        # chieu cao bar = 1/10 grid tru khe — CO DINH, khong theo so cua so
         fh = bars_frame.winfo_height()
-        # bar = min(slot - khe 10px, grid/5): khe GIA card LUON con ≥10px khi
-        # ≤5 cua so; >5 cua so → bar ep min 22px (khe tu hep).
-        if n_vis and fh > 60:
-            slot_h = fh // n_vis
-            bar_h = max(BAR_H, min(slot_h - 10, fh // 5))
+        if fh > 60:
+            bar_h = max(BAR_H, fh // MAX_SLOTS - 4)
             for sl in SLOTS:
-                if sl["hwnd"] is not None:
-                    sl["bar"].set_h(bar_h)
+                sl["bar"].set_h(bar_h)
         for sl in SLOTS:
             hwnd = sl["hwnd"]
-            active = (hwnd == ACTIVE_HWND[0]) and hwnd is not None
-            # cham dau PILL: DO = dang duyet, XANH = cua so song chua duyet
-            # (giong cham xanh o tab LI; an khi pill trong)
             if hwnd is None:
-                sl["dot"].configure(text="")
+                sl["bar"].set_dot(None)
+                sl["bar"].clear()
+                sl["box"].pack_forget()      # hang trong: holder van cho
                 continue
-            sl["dot"].configure(text="●",
-                                fg=DOT_RED if active else DOT_GREEN)
-            BARS[hwnd] = sl["bar"]
+            sl["box"].pack(fill="x", expand=True, padx=2, pady=1)
+            # theo ten moi lan: gán ten neu slot chua co (title vua xuat hien)
             nm, lv = read_title(hwnd)
+            if nm and not sl["name"]:
+                sl["name"] = nm
+            active = hwnd == ACTIVE_HWND[0]
+            # nen XANH LA khi cua so nay dang bind voi 1 account LI (giong LI)
+            bound = hwnd in LI_BINDINGS.values()
+            sl["box"].configure(bg=BG_BIND if bound else PILL)
+            sl["bar"].set_bg(BG_BIND if bound else PILL,
+                             "#BFE8C9" if bound else "#E9E9EE")
             p, col = bar_pct_color(lv)
             txt = f"{nm or '?'} · Lv {lv if lv is not None else '?'}"
             if active:
-                bar, cur = sl["bar"], sl["bar"].c
+                bar = sl["bar"]
+            sl["bar"].set_dot(DOT_RED if active else DOT_GREEN)
             sl["bar"].set(p, col, txt)
-        # an hang trong o CUOI; slot o giua giu nguyen cho trong (khong dot).
-        last_used = -1
-        for i, sl in enumerate(SLOTS):
-            if sl["hwnd"] is not None:
-                last_used = i
-        for i in reversed(range(MAX_SLOTS)):
-            sl = SLOTS[i]
-            if i <= last_used:
-                sl["frame"].pack(fill="both", expand=True)
-            else:
-                sl["frame"].pack_forget()
         li_idle_watch(wins)   # khong Train: quet BIND + tu dong relogin cua so mat
         li_refresh_bind_colors()   # nen xanh = user dang gan cua so song
         root.after(2000, sync_bars)
@@ -2447,7 +2525,9 @@ def main():
                 ok = False
                 try:
                     for _attempt in range(1, 4):
-                        if STOP_REQUESTED[0] or check_stop_key():
+                        # Train bat dau trong luc worker login → bo: hai
+                        # cung gao ban phim vao hai cua so = loan lenh.
+                        if STOP_REQUESTED[0] or check_stop_key() or TRAIN_ACTIVE[0]:
                             return
                         ok, g = li_run_account(a, load_li_cfg(), log_add)
                         if ok:
@@ -2472,36 +2552,123 @@ def main():
             threading.Thread(target=train_chain, daemon=True).start()
 
     def open_reset_dialog(_evt=None):
-        """Chuot phai nut Reset: mo bang nhap 5 diem cong (str/agi/vit/ene/cmd)."""
+        """Add Point / chuot phai nut Reset: suA danh sach lenh /add.
+        Keo tha hang ⋮⋮ → doi THU TU chay. auto = "/addX auto N". Luu cfg."""
         dlg = tk.Toplevel(root)
         dlg.title("Điểm cộng khi Reset")
         dlg.transient(root)
         dlg.grab_set()
         dlg.configure(bg=CARD)
-        vars_ = {}
-        keys = [("str", "Strength (/addstr)"), ("agi", "Agility (/addagi)"),
-                ("vit", "Vitality (/addvit)"), ("ene", "Energy (/addene)"),
-                ("cmd", "Command (/addcmd)")]
-        for i, (k, lab) in enumerate(keys):
-            tk.Label(dlg, text=lab, font=f_body, fg=TEXT, bg=CARD
-                     ).grid(row=i, column=0, sticky="w", padx=12, pady=4)
-            v = tk.StringVar(value=str(RESET_POINTS[k]))
-            vars_[k] = v
-            tk.Entry(dlg, textvariable=v, width=8, font=f_body, justify="center",
-                     relief="solid", bd=1).grid(row=i, column=1, padx=12, pady=4)
-        def save():
-            for k, v in vars_.items():
+        tk.Label(dlg, text="Kéo ⋮⋮ để đổi thứ tự chạy", font=f_small,
+                 fg=MUTED, bg=CARD).pack(anchor="w", padx=10, pady=(8, 0))
+        lst = tk.Frame(dlg, bg=CARD)
+        lst.pack(fill="both", expand=True, padx=10, pady=6)
+        rows = []          # frame hien thi, song song voi ADD_LINES
+        drag_ln = [None]   # dict dang bi keo (khong phai chi muc — doi khi swap)
+
+        def _start_drag(e, _ln):
+            # Button-1 bind tren CA fr + 2 label (hd/ten): bindtag cua child
+            # KHONG nam trong duong bubble cua cha → bind moi fr bo qua khoem
+            # ⋮⋮/ten. Entry/Checkbutton khong bind → van go/chon binh thuong.
+            drag_ln[0] = _ln
+
+        def preview(ln):
+            return f"/add{ln['stat']}" + (" auto" if ln["auto"] else "")
+
+        def harvest():
+            """Doc widget hien tai (check/entry) nguoc vao ADD_LINES.
+            KEY theo dict gan vao tung fr (_ln), KHONG theo vi tri: giua
+            hai lan redraw thu tu ADD_LINES co the DOI (vua swap) → zip
+            theo chi muc se ghi gia tri nham lenh khac (loi cu: keo xong
+            diem 'nhay' sang dong ben)."""
+            for fr in rows:
+                av, vv = fr._vars
+                ln = fr._ln
                 try:
-                    RESET_POINTS[k] = max(0, int(v.get()))
-                except ValueError:
+                    ln["auto"] = bool(av.get())
+                    ln["val"] = max(0, int(vv.get() or 0))
+                except Exception:
                     pass
-            persist_rows()   # ghi ca reset_points vao CFG_FILE
-            set_status(f"Đã lưu điểm Reset: {RESET_POINTS}")
+
+        def redraw():
+            harvest()                  # giu gia tri dang gõ khi ve lai
+            for r in rows:
+                r.destroy()
+            rows.clear()
+            for i, ln in enumerate(ADD_LINES):
+                fr = tk.Frame(lst, bg=PILL)
+                fr.grid(row=i, column=0, sticky="ew", pady=2)
+                lst.grid_columnconfigure(0, weight=1)
+                hd = tk.Label(fr, text="⋮⋮", font=f_body, fg=MUTED, bg=PILL,
+                              cursor="sb_v_double_arrow")
+                hd.pack(side="left", padx=(6, 2))
+                nmw = tk.Label(fr, text=preview(ln), font=f_body, fg=TEXT,
+                               bg=PILL, width=11, anchor="w")
+                nmw.pack(side="left")
+                av = tk.BooleanVar(value=ln["auto"])
+                cb = tk.Checkbutton(fr, text="auto", variable=av, font=f_small,
+                                    bg=PILL, fg=TEXT, activebackground=PILL,
+                                    selectcolor=CARD, highlightthickness=0, bd=0)
+                cb.pack(side="left")
+                vv = tk.StringVar(value=str(ln["val"]))
+                en = tk.Entry(fr, textvariable=vv, width=7, font=f_body,
+                              justify="center", relief="solid", bd=1)
+                en.pack(side="right", padx=6, pady=3)
+                fr._vars = (av, vv)   # giu reference (tkinter khong giu ho)
+                fr._ln = ln           # harvest theo DICT, khong theo chi muc
+
+                # keo duoc tu BAT CU dau tren hang (trừ Entry/Check): Button-1
+                # phai bind ca hd + label ten + fr — bindtag cua con KHONG co
+                # cha (chi co toplevel), nen bind moi fr bo qua khoem ⋮⋮/ten.
+                # Motion/Release bind tren DIALOG: redraw() giua chung destroy
+                # widget duoi con tro → Tk mat chu the event, loi cu keo 1 nhip
+                # dung het.
+                for _w in (fr, hd, nmw):
+                    _w.bind("<Button-1>",
+                            lambda e, _ln=ln: _start_drag(e, _ln))
+                rows.append(fr)
+
+        def drag_move(e):
+            _ln = drag_ln[0]
+            if _ln is None:
+                return
+            # keo theo DICT: sau moi swap tim lai vi tri va doi cho gan y tro
+            harvest()
+            lst.update_idletasks()   # redraw() vua tao row MOI → geometry phai
+            #                        # xong truoc khi do rooty/height (cu → mid
+            #                        # sai, swap nhay lang mang)
+            y = lst.winfo_pointeroy() - lst.winfo_rooty()
+            src = ADD_LINES.index(_ln)
+            for j, r in enumerate(rows):
+                if j == src:
+                    continue
+                ry = r.winfo_rooty() - lst.winfo_rooty()
+                mid = ry + r.winfo_height() // 2
+                if (j > src and y > mid) or (j < src and y < mid):
+                    ADD_LINES.insert(j, ADD_LINES.pop(src))
+                    break
+            redraw()
+
+        def drag_release(_e):
+            if drag_ln[0] is not None:
+                drag_ln[0] = None
+                save_live()
+
+        dlg.bind("<B1-Motion>", drag_move)
+        dlg.bind("<ButtonRelease-1>", drag_release)
+
+        def save_live():
+            harvest()
+            save_add_lines()
+
+        def save():
+            save_live()
+            set_status(f"Đã lưu {len(ADD_LINES)} lệnh /add theo thứ tự mới")
             dlg.destroy()
         tk.Button(dlg, text="Lưu", command=save, font=f_btn,
                   bg=ACCENT, fg="#FFFFFF", activebackground=ACCENT_HOVER,
-                  relief="flat", bd=0).grid(row=len(keys), column=0, columnspan=2,
-                                            sticky="ew", padx=12, pady=(8, 12))
+                  relief="flat", bd=0).pack(fill="x", padx=10, pady=(4, 10))
+        redraw()
         center_on_root(dlg)
 
     def set_train_active(active):
@@ -2936,25 +3103,40 @@ def main():
             send_ctrl_f_off(hwnd)
             return "done"
         tok, x, y, vmin, vmax = target
-        # DOC TOA DO KHONG CAN THAO TAC CHUOT truoc: neu Giam tai dang BAT va
-        # van o dung spot -> THAM LAN nay chi xem Lv, KHONG click gi ca
-        # (tranh moi vong duyet bam (400,300) lien tuc khi khong can).
+        # --- FAST PATH: Giam tai BAT + XY khop + DUNG MAP + chua qua 5 lan ---
+        # LOI CU: a_pos() doc thang memory KHONG click → gia tri CU (offset chi
+        # refresh khi co thao tac trong client). Nhan vat bi loi/chet ve thanh
+        # pho van doc ra toa do bai cu → "o dung spot" GIA → return → khong bao
+        # gio click → khong bao gio refresh → CHET ATM trong vong lap. Khac map
+        # (chet/teleport) bat ngay kh can click; dung map qua nhieu lan cung
+        # buoc click xac minh lai → vong lap cu kh the ton tai mai mai.
         px, py = a_pos()
-        if LT_ON.get(hwnd) and px is not None and at_spot(px, py, x, y):
+        mid_now = a_map()
+        mid_want = _TOKEN_TO_MID.get(tok)
+        wrong_map = (mid_want is not None and mid_now is not None
+                     and mid_now != mid_want)
+        streak = VISIT_STREAK.get(hwnd, 0)
+        if wrong_map:
+            log_add(f"  {nm}: SAI MAP ({mid_now} != {mid_want} cua spot {tok})"
+                    f" → bat buoc ve lai bai")
+        elif (LT_ON.get(hwnd) and px is not None and not wrong_map
+                and at_spot(px, py, x, y) and streak < 5):
+            VISIT_STREAK[hwnd] = streak + 1
             log_add(f"  {nm}: Lv {lv} — o dung spot, Giam tai dang BAT → "
-                    f"bo qua Home/Helper, cho tu train")
+                    f"bo qua Home/Helper, cho tu train "
+                    f"({streak + 1}/5 lan chua kiem tra that)")
             return "visit"
+        VISIT_STREAK[hwnd] = 0
         # Offset memory chi refresh khi co thao tac trong client -> click
-        # (400,300) ep cap nhat ROI MOI so sanh vi tri (tranh doc toa do cu
-        # -> tuong "dung spot" -> khong di chuyen lai). Chi click khi THUC SU
-        # can quyet dinh di/cham soc cua so nay.
+        # (400,300) ep cap nhat ROI MOI doc (pos_stable: 2 lan lien tiep khong
+        # doi) — tranh doc gia tri cu -> tuong "dung spot" -> khong di lai.
         r = find_window_hwnd(hwnd)
         if r:
             (nL, nT, nW, nH), _ = r
             click_at(nL + ANCHOR_X, nT + ANCHOR_Y, right=False, hwnd=hwnd)
         time.sleep(0.5)
-        px, py = a_pos()
-        if px is None or not at_spot(px, py, x, y):
+        px, py = pos_stable()
+        if px is None or wrong_map or not at_spot(px, py, x, y):
             log_add(f"  {nm}: Lv {lv} → di toi {tok} ({x},{y}) [Lv {vmin}-{vmax}]")
             SELECTED_SPOT[0] = (tok, x, y)
             goto(_from_train=True)
@@ -3132,15 +3314,16 @@ def main():
         LI_ROW_WIDGETS.clear()
         LI_HOLDERS.clear()
         LI_ROW_H[0] = -1     # hang moi render → buoc layout ap chieu cao lai
-        for i, a in enumerate(li_accounts):
-            # holder CHIEM SLOT DEU (expand), box LE co chen 2 spacer → box
-            # duoc = min(slot, grid/5) nam GIUA slot: it account → khoang
-            # trong chia deu tren/duoi, nhieu → ken kin (o tab RR cung cach).
+        for i, a in enumerate(li_accounts[:10]):
+            # holder CHIEM SLOT DEU (expand); box LE chieu cao CO DINH
+            # (pack_propagate False) → pill co duoc khi nhieu account,
+            # khong bi label day min ~28px (lim 7 dòng cu).
             holder = tk.Frame(li_list_parent, bg="#F2F2F7")
             holder.pack(fill="both", expand=True)
             top = tk.Frame(holder, bg=CARD); top.pack(fill="both", expand=True)
             box = tk.Frame(holder, bg="#F2F2F7")
             box.pack(fill="x", expand=False, padx=2, pady=1)
+            box.pack_propagate(False)
             bot = tk.Frame(holder, bg=CARD); bot.pack(fill="both", expand=True)
             dot = "●" if a.get("enabled", True) else "○"
             col = "#34C759" if a.get("enabled", True) else MUTED
@@ -3148,9 +3331,7 @@ def main():
             dl.pack(side="left", padx=(6, 0))
             lbl = tk.Label(box, text=a.get("user") or "(trống)", font=f_body,
                            fg=TEXT, bg="#F2F2F7", anchor="w")
-            lbl.pack(side="left", fill="x", expand=True, padx=6,
-                     pady=(3 + max(0, (li_row_height() - 26) // 2),
-                           3 + max(0, (li_row_height() - 26) // 2)))
+            lbl.pack(side="left", fill="x", expand=True, padx=6)
             for wdg in (box, lbl):
                 wdg.bind("<Button-1>", lambda _e, k=i: li_edit_account(k))
                 wdg.configure(cursor="hand2")
@@ -3160,34 +3341,29 @@ def main():
         root.after(50, li_layout_rows)   # sau khi card ep layout xong
 
     def li_row_height():
-        """Cao pill tai khoan = min(slot, card/5) — it tai khoan → pill CAO
-        dan toi DAU card/5 (spacer 2 dau chia het phan con), nhieu → pill
-        tu co lai. slot = card / so_hang."""
+        """Cao pill = min(slot, card/5), san xuong 22px khi >5 account →
+        du 10 dong van vua grid. slot = card / so_hang."""
         try:
             h = li_list_parent.winfo_height()
         except Exception:
             h = 0
         n = max(1, len(LI_HOLDERS))
-        slot = h // n if h > 50 else 26
-        return max(26, min(slot, h // 5 if h > 50 else 26))
+        if h <= 50:
+            return 26
+        return max(22, min(h // n - 4, h // 5))
 
     def li_layout_rows():
-        """Ap chieu cao moi (pady lbl → pill duoc nang) khi card/so hang doi.
-        Chi re-pack khi gia tri THAY DOI — khong chop 2s/lan."""
-        extra = max(0, (li_row_height() - 26) // 2)
-        if extra == LI_ROW_H[0]:
+        """Ap chieu cao moi cho box (co dinh) khi card/so hang doi.
+        Chi re-configure khi gia tri THAY DOI — khong chop 2s/lan."""
+        ph = li_row_height()
+        if ph == LI_ROW_H[0]:
             return
-        LI_ROW_H[0] = extra
+        LI_ROW_H[0] = ph
         for _holder, _top, box, _bot in LI_HOLDERS:
-            labels = [w for w in box.winfo_children()
-                      if isinstance(w, tk.Label)]
-            for lbl in labels[1:]:          # [0] = cot dot, giu nguyen
-                try:
-                    lbl.pack_forget()
-                    lbl.pack(side="left", fill="x", expand=True, padx=6,
-                             pady=(3 + extra, 3 + extra))
-                except Exception:
-                    pass
+            try:
+                box.configure(height=ph)
+            except Exception:
+                pass
 
     def li_refresh_bind_colors():
         """Nen XANH LA = user dang gan (bind) voi cua so game con song."""
@@ -3378,7 +3554,7 @@ def main():
             _last_pos_text[0] = t
             if bar is not None:
                 p, col = bar_pct_color(lv)
-                bar.set(p, col, t, active=True)
+                bar.set(p, col, t)
     def poll_live():
         try:
             x, y = a_pos()
@@ -3455,74 +3631,87 @@ def main():
 
     def send_chat_command(cmd):
         """Gui 1 lenh chat: Enter mo chat → COPY lenh vao clipboard → doc lai
-        xac minh DUNG → Ctrl+V → Enter gui (toi da 3 lan copy→verify→dan).
+        xac minh DUNG → Ctrl+V → Enter gui.
 
-        Clipboard NAY SACH mat khau: login da chuyen sang go tung phim (khong
-        copy user/pass) → client MU khong con gia tri cache de 'mieu' Ctrl+V.
-        Moi lenh tu copy lai tu dau, verify clipboard THAT SU mang dung lenh
-        truoc khi dan."""
+        KHONG BAO GIO tra True neu chua chac chan lenh toi dung cua so: moi
+        buoc (mo chat, dan, Enter-gui) deu guard_foreground THAT → return
+        False, dong o chat bang Esc de lan retry sau khong nhan doi/nhoi lenh.
+        Clipboard nay sach mat khau: login go tung phim (khong copy user/pass)
+        → client MU khong con gia tri cache de 'mieu' Ctrl+V."""
         wh = ACTIVE_HWND[0] or focus_game()
         if not wh or not user32.IsWindow(wh):
             log_add("  lenh: chua co cua so game dang mo — HOAN gui lenh "
                     "(mo game roi thao tac).")
             return False
-        if not guard_foreground(wh, "lenh"):
-            log_add("  lenh: khong focus duoc cua so game — HOAN gui lenh.")
-            return False
-        time.sleep(0.10)
-        _tap_vk(0x0D); time.sleep(0.30)             # Enter mo khung chat
-        if not guard_foreground(wh, "lenh/sau-enter"):
-            log_add("  lenh: mat focus khi mo chat — HOAN gui lenh.")
-            return False
-
-        def _paste(text):
-            for k in range(3):
+        chat_open = False     # lan truoc MO o chat roi → do → phi (KHONG Esc
+                              # lien: Esc khi khong mo co the dong menu/dialog
+                              # dang mo trong game; chi Esc khi chac chat dang mo)
+        for attempt in range(1, 4):
+            if STOP_REQUESTED[0] or check_stop_key():
+                return False
+            if chat_open:
                 _ensure_foreground(wh)
-                if not copy_to_clipboard(text):
-                    log_add(f"  lenh: copy THAT BAI lan {k+1} (clipboard bi chan)")
-                    time.sleep(0.15)
-                    continue
-                time.sleep(0.05)
-                if read_clipboard() != text:        # app khac ghi de → copy lai
-                    log_add(f"  lenh: clipboard bi GHI DE lan {k+1} → copy lai")
-                    time.sleep(0.15)
-                    continue
-                if not guard_foreground(wh, "lenh/truoc-dan"):
-                    time.sleep(0.15)
-                    continue
-                paste_clipboard()
-                return True
-            return False
+                _tap_vk(0x1B); time.sleep(0.15)     # Esc dong chat cho sach
+                chat_open = False
+            if not guard_foreground(wh, "lenh"):
+                log_add(f"  lenh lan {attempt}: khong focus duoc cua so game.")
+                continue
+            time.sleep(0.10)
+            if not guard_foreground(wh, "lenh/truoc-enter"):
+                continue
+            _tap_vk(0x0D); time.sleep(0.30)         # Enter mo khung chat
+            chat_open = True
+            if not guard_foreground(wh, "lenh/sau-enter"):
+                log_add(f"  lenh lan {attempt}: mat focus khi mo chat.")
+                continue
 
-        if not _paste(cmd):
-            log_add(f"  lenh: clipboard kh xac minh duoc 3 lan — KHONG gui {cmd!r}.")
-            return False
-        time.sleep(0.15)
-        if guard_foreground(wh, "lenh/Enter-gui"):
-            _tap_vk(0x0D); time.sleep(0.15)         # Enter gui
-        else:
-            log_add("  lenh: mat focus luc Enter — lenh co the chua duoc gui.")
-        return True
+            def _paste(text):
+                for k in range(3):
+                    _ensure_foreground(wh)
+                    if not copy_to_clipboard(text):
+                        log_add(f"  lenh: copy THAT BAI lan {k+1} (clipboard bi chan)")
+                        time.sleep(0.15)
+                        continue
+                    time.sleep(0.05)
+                    if read_clipboard() != text:    # app khac ghi de → copy lai
+                        log_add(f"  lenh: clipboard bi GHI DE lan {k+1} → copy lai")
+                        time.sleep(0.15)
+                        continue
+                    if not guard_foreground(wh, "lenh/truoc-dan"):
+                        time.sleep(0.15)
+                        continue
+                    paste_clipboard()
+                    # verify lenh that su xuat hien trong o chat: doc lai
+                    # clipboard KHONG du — phai dan moi thay. Ctrl+A xoa noi
+                    # dung cu cua o chat truoc khi dan → kh bao gio duo lenh.
+                    return True
+                return False
+
+            if not _paste(cmd):
+                log_add(f"  lenh lan {attempt}: clipboard kh xac minh duoc — "
+                        f"KHONG gui {cmd!r}.")
+                continue
+            time.sleep(0.15)
+            if guard_foreground(wh, "lenh/Enter-gui"):
+                _tap_vk(0x0D); time.sleep(0.15)     # Enter gui
+                return True
+            # Enter gui mat focus → lenh co the con nam trong o chat. Lan sau
+            # Esc xoa no roi dan + Enter LAI tu dau (idempotent) — KHONG Enter
+            # tiep: neu Enter cu ra van toi (focus check gia) se gui doi lenh.
+            log_add(f"  lenh lan {attempt}: mat focus luc Enter — thu lai.")
+        log_add(f"  lenh: 3 LAN kh gui duoc {cmd!r} — kiem tra cua so game.")
+        return False
 
     def type_move_command(tok):
-        send_chat_command(f"/move {tok}")
+        return send_chat_command(f"/move {tok}")
+
+    def add_line_cmd(ln):
+        return f"/add{ln['stat']}{' auto' if ln['auto'] else ''} {ln['val']}"
 
     def build_reset_commands():
-        """Chuoi lenh reset dung diem cong tu RESET_POINTS (sua bang chuot phai)."""
-        p = RESET_POINTS
-        return [
-            "/reset",
-            f"/addstr {p['str']}",
-            f"/addagi {p['agi']}",
-            f"/addvit {p['vit']}",
-            f"/addene {p['ene']}",
-            f"/addcmd {p['cmd']}",
-            "/addagi auto 32000",
-            "/addstr auto 32000",
-            "/addene auto 32000",
-            "/addvit auto 32000",
-            "/addcmd auto 32000",
-        ]
+        """/reset + toan bo ADD_LINES — THU TU list = thu tu chay (sua/keo tha
+        o nut Add Point; cung luu vao CFG_FILE)."""
+        return ["/reset"] + [add_line_cmd(ln) for ln in ADD_LINES]
 
     RESET_ACTIVE = [False]
 
@@ -3542,7 +3731,11 @@ def main():
                 log_add("  Reset bị dừng.")
                 return False
             set_status(f"Reset {idx+1}/{len(cmds)}: {cmd}")
-            send_chat_command(cmd)
+            if not send_chat_command(cmd):
+                # lenh KHONG toi cua so → dung chain: reset nua xong nua loi
+                # con /reset ma thieu /add = mat diem. Lan sau Lv>=400 thu lai.
+                log_add(f"  Reset dung: {cmd} kh gui duoc — KHONG ghi lich su.")
+                return False
             log_add(f"  >> {cmd}")
             # Sau /reset cho 5s de game reset xong; cac lenh sau cach 1s.
             wait = 5.0 if idx == 0 else 1.0
@@ -3698,7 +3891,7 @@ def main():
         click_interval = 0.1
         mov_ahead = 6.0
         running[0] = True
-        MOUSE_BLOCK[0] = True   # App toan quyen chuot: chan click vat ly cua user
+        MOUSE_BLOCK[0] += 1   # App toan quyen chuot: chan click vat ly cua user
         try:
             while running[0] and not STOP_REQUESTED[0]:
                 arrived = _goto_once(m, tok, tx, ty, click_interval, mov_ahead,
@@ -3709,7 +3902,8 @@ def main():
                 set_status("Move lại từ đầu...")
         finally:
             running[0] = False
-            MOUSE_BLOCK[0] = False   # tra chuot cho nguoi dung
+            MOUSE_BLOCK[0] = max(0, MOUSE_BLOCK[0] - 1)  # tra chuot (neu khong
+            #                                          # co train/reset bao ngoai)
 
     def _goto_once(m, tok, tx, ty, click_interval, mov_ahead, from_train=False):
         """1 lan di: warp + A* + di chuyen. Tra True neu DEN NOI, False neu
