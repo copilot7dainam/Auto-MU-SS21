@@ -43,8 +43,10 @@ app hoặc `~/mu_login`): launcher path, tiêu đề cửa sổ, tọa độ, t�
 
 ## 2. Giao diện
 
-Cửa sổ **cố định 280×520**, phong cách macOS. Hàng đầu: nút **▶ Train** + 4 tab
-**RR / Spot / Log / LI**. Mọi lựa chọn tự lưu, khôi phục lần sau mở tool.
+Cửa sổ **cố định 320×560**, phong cách macOS hiện đại. Hàng đầu: nút
+**▶ Train** pill lớn (đổi thành **■ Stop** màu xanh lá khi đang chạy), tiếp
+theo là **segmented control 4 tab RR / Spot / Log / LI**. Mọi lựa chọn tự lưu,
+khôi phục lần sau mở tool.
 
 ### Tab "RR" — Điều khiển
 - **▶ Train** — bật/tắt chuỗi train tự động (nhấn lần 1 chạy, nhấn lần 2 dừng).
@@ -73,9 +75,9 @@ Cửa sổ **cố định 280×520**, phong cách macOS. Hàng đầu: nút **�
   trên, **log tiến trình** dưới. Kéo con lăn chuột để xem log cũ.
 - Lịch sử reset ghi gọn: `Tên reset ( avg X phút / N lần )`.
 - Đường đi **không** in từng điểm — chỉ báo **DEN NOI** khi tới nơi.
-- **➕ Add Point** — modal danh sách lệnh `/add`, **kéo hàng ⋮⋮ để đổi thứ tự
-  chạy** (thả chuột là lưu ngay); checkbox `auto` + ô điểm từng stat; nút **Lưu**
-  đóng dialog. Chuỗi reset chạy đúng thứ tự hiển thị ở đây.
+- **➕ Add Point** — modal danh sách lệnh `/add`, **bấm chọn 1 dòng (sáng lên)
+  → bấm dòng khác để chèn lên trước nó** (lưu ngay); checkbox `auto` + ô điểm
+  từng stat; nút **Lưu** đóng dialog. Chuỗi reset chạy đúng thứ tự hiển thị.
 - **📷 Camera** — modal chọn ảnh cần chụp, xem trước ảnh đã lưu:
   - **Helper** — icon khi Helper đang bật.
   - **Giảm tải** — icon khi Giảm tải đang bật.
@@ -149,13 +151,15 @@ vật chạy chuỗi riêng theo **Lv của chính nó** + cấu hình riêng th
 
 | Lớp | Cách hoạt động |
 |-----|----------------|
-| **Helper** | Tới đích → chờ 1s → nhấn Home → 1s → tìm icon Helper → chưa thấy → nhấn lại → lặp (PgUp thoát). Không verify được ảnh → bấm Home 1 lần (best effort) |
+| **Helper** | **Tắt Giảm tải trước** → kéo cửa sổ lên foreground → chờ 1s → nhấn Home → 1s → tìm icon Helper → chưa thấy → nhấn lại → **tối đa 10 lần** → không thấy → **hoãn cửa sổ 5 phút, sang cửa sổ khác**. Không verify được ảnh → bấm Home 1 lần (best effort) |
 | **Giảm tải** | ON: không thấy icon → Ctrl+F → 1s → thấy → dừng. OFF: thấy icon → Ctrl+F → 1s → mất → dừng. Tối đa 10 lần |
 | **Chế độ đơn giản** (tùy chọn) | Không thấy **ảnh A** → **click điểm B** đã cấu hình → 1s → kiểm tra lại → lặp. Chỉ chạy **sau khi đã thoát Giảm tải thành công** |
 
 **Nguyên tắc "không chắc thì không đi tiếp":**
 - Ảnh chụp để so khớp luôn **kéo đúng cửa sổ thao tác lên đỉnh trước khi chụp**
   — chống trường hợp cửa sổ game khác đè lên làm nhận diện sai.
+- **Kiểm tra Helper luôn tắt Giảm tải trước** — Giảm tải đang bật thì Home
+  không lên được Helper → tránh vòng lặp "bấm Home mãi không thấy".
 - Giảm tải **chưa thoát được** (10 lần bấm / không verify được ảnh) → tool
   **dừng chuỗi ở cửa sổ đó**, hoãn sang lượt duyệt sau; **không** /move,
   **không** reset, **không** chạy bước kế tiếp.
@@ -182,22 +186,47 @@ vật chạy chuỗi riêng theo **Lv của chính nó** + cấu hình riêng th
    cập nhật tọa độ memory → đọc tới khi **ổn định**.
 2. Xác nhận warp bằng **cả map đúng lẫn vị trí thay đổi** (chống "đến nơi" giả).
 3. A* trên lưới walkable. **Mỗi click chỉ cách tâm nhân vật tối đa 5 unit**.
+   Đích nằm trong vùng cô lập (A* hỏng) → **BFS tìm tile gần đích nhất vẫn tới
+   được** — đi tới gần nhất thay vì báo lỗi.
 4. **Stuck**: 3s → giữ chuột phải 1s → 6s → giữ phải lần 2 → 9s → tính lại
    đường. Tổng stuck >5 lần / 30s chưa tới điểm / 60s chưa tới đích → nghỉ 3s →
    `/move` lại từ đầu.
 5. Trước `/move`: nếu còn thấy nút Giảm tải → tắt trước.
 
-## 7. Reset stat
+## 7. Chống kẹt & tự phục hồi (v1.6.0)
+
+- **Spot cooldown** — spot fail A* 3 lần → bỏ qua 10 phút, nhảy dòng kế tiếp
+  (chống lặp vô hạn "không tìm được đường" tại 1 spot chết).
+- **Hoãn cửa sổ lỗi** — cửa sổ fail liên tục 3 lần (hoặc Helper không bật
+  được sau 10 lần Home) → hoãn 5 phút, duyệt cửa sổ khác trước.
+- **Supervisor train** — thread train crash → log traceback → tự khởi động
+  lại sau 5s. Mọi crash luồng được ghi `mu_goto_errors.log`.
+- **Stall watchdog** — log không có dòng mới 15 phút → tự restart chuỗi.
+- **Memory sanity** — tọa độ chỉ nhận finite 0–255; MapID chỉ nhận giá trị
+  có trong danh sách tên — đọc rác trả `None`, không bao giờ click mù.
+  pymem handle chết được tái tạo tự động.
+- **Game treo** — Not Responding >2 phút → kill → watchdog relogin tự login
+  lại. Tự đóng dialog "main.exe stopped working" (không dùng subprocess →
+  không còn console đen nhấp nháy).
+- **Cửa sổ minimize** → tự restore trước khi thao tác.
+- **Login đúng nhân vật** — title sau login so khớp `char_name`; vào nhầm
+  char → đóng cửa sổ, login lại.
+- **Config atomic** — mọi file JSON ghi qua `.tmp` + `os.replace` (crash giữa
+  lúc ghi không mất config). Mutex Windows chặn chạy 2 bản tool cùng lúc.
+  Log lỗi tự truncate >1MB.
+
+## 8. Reset stat
 
 - Đạt Lv 400 trong lúc Train = **tự động** chạy chuỗi, xong quay lại dòng 1.
   Không còn nút hẹn Reset.
 - Chuỗi: `/reset` (chờ 5s) → từng lệnh `/add...` **cách nhau 1s**, thứ tự chạy
-  = đúng thứ tự danh sách trong modal **➕ Add Point** (kéo ⋮⋮ để đổi). Mặc định:
+  = đúng thứ tự danh sách trong modal **➕ Add Point** (**bấm chọn 1 dòng →
+  bấm dòng khác để chèn lên trước nó**). Mặc định:
   5 dòng `/addstr|agi|vit|ene|cmd 500` rồi 5 dòng `auto 32000`.
 - **Lệnh không gửi được = chuỗi dừng ngay** và **không ghi lịch sử** — không
   bao giờ báo "reset xong" giả khi /reset đã chạy mà thiếu lệnh /add.
 
-## 8. Quyền chuột & an toàn
+## 9. Quyền chuột & an toàn
 
 - Khi tool chiếm chuột (di chuyển), **mọi click vật lý của người dùng bị chặn**
   bằng low-level hook (click do tool phát vẫn hoạt động). Thả ngay khi dừng.
@@ -207,7 +236,7 @@ vật chạy chuỗi riêng theo **Lv của chính nó** + cấu hình riêng th
 
 ---
 
-## 9. File config (cạnh exe)
+## 10. File config (cạnh exe)
 
 | File | Nội dung |
 |------|----------|
@@ -217,13 +246,13 @@ vật chạy chuỗi riêng theo **Lv của chính nó** + cấu hình riêng th
 | `rows_map` (trong cfg) | 5 dòng train **riêng từng account** |
 | `li_templates/*.png` | Ảnh Play / Credit / Connect |
 
-## 10. Test toàn bộ map (`mu_goto_test.py`)
+## 11. Test toàn bộ map (`mu_goto_test.py`)
 
 Mô phỏng pathfinding trên mọi map có sẵn, **100 lần/map**: chọn ngẫu nhiên tọa
 độ hiện tại & đích (0–255), tính đường A* y hệt `mu_goto.py`. Tổng cộng
 85 × 100 = 8500 lần test.
 
-## 11. Dữ liệu bản đồ (grid)
+## 12. Dữ liệu bản đồ (grid)
 
 `mu_path.load_grid(map_num)` đọc grid walkable từ
 `att_samples/_grid_cache/World<map>.json`. Chưa có cache → lần đầu gọi
@@ -236,7 +265,7 @@ liệu); **62 map chưa giải được** do `att_dec.js` lỗi `algo2 unsupport
 > ánh xạ MapID → tên file grid (54/85 map có tên không theo quy ước
 > `WorldN_Grid.json`). Thiếu nó, exe không `load_grid` được.
 
-## 12. Kiến trúc tóm tắt
+## 13. Kiến trúc tóm tắt
 
 | Tầng | File chính |
 |------|-----------|

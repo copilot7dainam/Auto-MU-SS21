@@ -176,6 +176,34 @@ def astar(walk, start, goal):
     return None
 
 
+def nearest_reachable(walk, start, goal):
+    """Tile WALKABLE GAN goal NHAT ma DI TU start TOI DUOC (BFS tu start).
+    Dung khi A* that bai vi goal nam trong vung co lap: thay vi bao hong
+    (lap vo han "khong tim duoc duong"), di toi gan dich nhat trong vung
+    toi duoc. Tra ve (x,y) hoac None neu start khong walkable."""
+    if not (0 <= start[0] < N and 0 <= start[1] < N and walk[start[1]][start[0]]):
+        return None
+    from collections import deque
+    gx, gy = goal
+    seen = {start}
+    best, best_d = None, None
+    q = deque([start])
+    while q:
+        cur = q.popleft()
+        d = abs(cur[0] - gx) + abs(cur[1] - gy)
+        if best is None or d < best_d:
+            best, best_d = cur, d
+        if d == 0:
+            break
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nb = (cur[0] + dx, cur[1] + dy)
+            if (nb not in seen and 0 <= nb[0] < N and 0 <= nb[1] < N
+                    and walk[nb[1]][nb[0]]):
+                seen.add(nb)
+                q.append(nb)
+    return best
+
+
 def replan(walk, start, goal, blocked=None, radius=3):
     """Tim duong moi tu start->goal, CO BLOCK TAM THOI cac o quanh vi tri 'blocked'
     (vi tri nhan vat bi kem). radius: ban kinh block them quanh blocked de ep duong
