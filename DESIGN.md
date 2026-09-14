@@ -114,11 +114,30 @@ Test: `if __name__`: vote([1,1,0]) True; vote([1,0]) False; vote all None→None
   "◎ Nút Helper / ◎ Nút Giảm tải" (chup diem tren anh → luu toa do CLIENT).
 - LI dang nhap: GIU nguyen nhieu buoc lien (chua PM hoa toan bo LI flow).
 
-## Viec con lai (v1.8+)
-- Train SONG SONG 1-thread/cua-so (PM da cho phep — bo xoay 2s).
-- Hieu chuan nut HUD (user phai bam 2 nut "◎" trong Camera 1 lan).
+## Viec con lai (v1.9+)
+- ~~Train SONG SONG 1-thread/cua-so~~ ✓ v1.8 (thread-local WINCTX/RUN, watchdog tach).
+- ~~4 nut HUD hieu chuan~~ ✓ (Mobile/Helper/Vào GT/Thoát GT — MobileMod bat BUOC truoc Helper/GiamTai).
 - PM hoa toan bo LI login flow (nut Login/Server/P1-4 + typing login).
 - pointer chain cho offset heap (chong restart game mat flag) — hook_probe
   mu_state dang doc absolute heap addr.
-- kiem thu: mo game → Camera → hieu chuan 2 nut HUD → Train voi cua so o day
-  background → xem log "flags: ✓ khop anh" + nhan vat tu di chuyen.
+- kiem thu: mo game → Camera → hieu chuan 4 nut HUD → Train → log flag +
+  nhan vat tu di chuyen o TAT CA cua so DONG THOI.
+
+## v1.8 — POM mode thuan memory + train SONG SONG (audit 6 chieu + 37 findings)
+- YEU CAU: TAT CA cua so = N thread cung luc (thuong 10/PC, khong tran co dinh); kiem tra Helper/GiamTai/MobileMod
+  THUAN MEMORY (khong anh, khong active cua so); bat/tat = PM CLICK toa do
+  nut HUD da hieu chuan; MobileMod phai BAT truoc Helper/GiamTai.
+- FLAG_TRUST=1 MAC DINH: khong bao gio chup anh khi train. Fail do flag
+  (thieu/hong json, offset heap da cu) → hoan cua so + log nguyen nhan
+  (WATCHDOG tab LI: thread rieng 5', cua so CHET → PAUSE toan bo, mo lai
+  ≤3 lan/3', nghi 10' → vong sau).
+- FLAG_TRUST=0 (= nut "che do cu" trong code): sanity flag↔anh one-shot/pid;
+  lech → VE verify anh + phim that (duong vat ly van con, pm_mode=0).
+- Audit-fix quan trong: rect refresh theo win_hwnd() (tung worker), MOVE_ABORT
+  = SET hwnd (chi cua so chet bi huy luot di, 5 cua lanh di tiep), _goto_once
+  BO reset_stop() (nuot PgUp da thread), capture_icon/early-return PHAI goi
+  on_done (modal khong con an Vinh Vien), proc_box.size() → _LOG_LINES (Tk
+  lenh tu thread la = treo), races: for_win_lock/state_reader/get_pm_for +
+  MOUSE_BLOCK deu co lock; PgUp → tat Giam tai MOI cua so; pm_mode=0 → train
+  TUAN TU (click vat ly khong tranh duoc); GetForegroundWindow/GetModuleHandleW
+  khai bao restype (HWND 64-bit khong bi sign-extend).

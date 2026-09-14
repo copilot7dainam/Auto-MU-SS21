@@ -314,13 +314,16 @@ ADD_LINES = [{"stat": k, "val": 500, "auto": False} for k in ADD_STATS] + \
              ("agi", "str", "ene", "vit", "cmd")]
 
 def _cfg_dict():
-    """Toan bo dict config (giu nguyen cac key khac khi ghi)."""
+    """Toan bo dict config (giu nguyen cac key khac khi ghi). Hong parse →
+    log_err 1 lan: loi kh im lang roi save ke tiep ghi de mat row cu."""
     try:
         d = json.load(open(CFG_FILE, encoding="utf-8"))
         if isinstance(d, list):          # dinh dang cu: chi co rows
             d = {"rows": d}
         return d if isinstance(d, dict) else {}
-    except Exception:
+    except Exception as e:
+        if os.path.exists(CFG_FILE):
+            log_err(f"[cfg] doc CFG_FILE hong ({e}) — lan LUU ke tiep se ghi de")
         return {}
 
 
@@ -357,10 +360,20 @@ def load_cfg():
         PM_MODE[0] = 1 if d.get("pm_mode", 1) else 0
     except Exception:
         pass
+    try:
+        # 1 = thuan memory (mac dinh v1.8); 0 = "che do cu": sanity flag↔anh
+        # one-shot/pid, lech → verify anh + phim that.
+        FLAG_TRUST[0] = 1 if d.get("flag_trust", 1) else 0
+    except Exception:
+        pass
     hb = d.get("hud_btn")
     if isinstance(hb, dict):
-        for k in ("helper", "lt"):
+        for k in ("mobile", "helper", "lt_on", "lt_off", "lt"):
             v = hb.get(k)
+            if k == "lt":
+                if "lt_on" in hb:
+                    continue          # da migrate → qu bo key co, dung tai-luu
+                k = "lt_on"           # cfg cu: 'lt' → nut BAT Giam tai
             try:
                 HUD_BTN[k] = (int(v[0]), int(v[1]))
             except (TypeError, ValueError, IndexError):
@@ -369,10 +382,11 @@ def load_cfg():
 
 
 def save_pm_cfg():
-    """Ghi pm_mode + hud_btn vao CFG_FILE, giu key khac."""
+    """Ghi pm_mode + flag_trust + hud_btn vao CFG_FILE, giu key khac."""
     try:
         d = _cfg_dict()
         d["pm_mode"] = int(PM_MODE[0])
+        d["flag_trust"] = int(FLAG_TRUST[0])
         d["hud_btn"] = {k: [v[0], v[1]] for k, v in HUD_BTN.items()}
         _atomic_write_json(CFG_FILE, d)
     except Exception:
@@ -608,6 +622,12 @@ user32.WindowFromPoint.argtypes = [wt.POINT]
 user32.WindowFromPoint.restype = wt.HWND
 user32.GetAncestor.argtypes = [wt.HWND, wt.UINT]
 user32.GetAncestor.restype = wt.HWND
+# HWND phai la c_void_p: mac dinh c_int = sign-extend → so sanh voi hwnd tu
+# EnumWindows (int duong) sai voi moi handle >= 0x80000000.
+user32.GetForegroundWindow.argtypes = []
+user32.GetForegroundWindow.restype = wt.HWND
+kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+kernel32.GetModuleHandleW.restype = wt.HINSTANCE
 user32.BringWindowToTop.argtypes = [wt.HWND]
 user32.BringWindowToTop.restype = wt.BOOL
 user32.SetWindowPos.argtypes = [wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int,
@@ -636,9 +656,16 @@ AUTO_RESET_LV = 400
 #     verify anh (can cua so tren dinh). Thieu file/offset → tu dong quay ve
 #     verify anh cu.
 PM_MODE = [1]                 # 0 = che do vat ly cu hoan toan
-HUD_BTN = {}                  # "helper"/"lt" -> (client_x, client_y)
+# 4 nut HUD hieu chuan (toa do CLIENT cua cua so game):
+#   mobile  → nut bat CHE DO MOBILE (dieu kien CAN truoc khi bat Helper/Giam tai)
+#   helper  → nut bat Helper          (thay phim Home)
+#   lt_on   → nut bat Giam tai        (thay Ctrl+F)
+#   lt_off  → nut THOAT Giam tai      (Ctrl+F la toggle → can nut rieng de
+#              KHONG bao gio bam nham bat lai khi dang muon tat)
+HUD_BTN = {}                  # key -> (client_x, client_y)
 COORD_HWND = [None]           # cua so ma overlay cham-diem vua chup (de quy doi)
 _STATE_R = {}                 # pid -> mu_state.FlagReader
+_SR_LOCK = threading.Lock()   # state_reader: 1 pid = 1 FlagReader
 _FLAG_TRUST = {}              # pid -> True/False (None=chua kiem)
 _GAME_PID = {}                # pid -> bool (cache QueryFullProcessImageName)
 PM_NOTE_DONE = set()          # chan log lap lai moi vong
@@ -688,62 +715,106 @@ def pm_target(hwnd):
     return bool(PM_MODE[0] and hwnd and mu_pm.is_alive(hwnd)
                 and pid_is_game(pid_of(hwnd)))
 
+# ===================== PER-WINDOW CONTEXT (train SONG SONG) =====================
+# Truoc day moi thu quy ve "cua so ACTIVE" toan cuc → chi 1 cua so / luc.
+# Moi worker thread gan cua so cua NO vao WINCTX; cac ham doc vi tri/map/
+# anchor/gui lenh lay win_hwnd() (thread-local) → N cua so = N thread cung
+# thao tac song song, khong tranh ACTIVE_HWND, khong focus, khong anh.
+WINCTX = threading.local()
+RUN      = threading.local()    # flag "luot di dang chay" cua TUNG thread
+RUNNING0 = [False]              # alias cua `running` trong main (GUI/manual)
+
+def set_winctx(hwnd):
+    WINCTX.hwnd = hwnd
+
+def win_hwnd():
+    """Cua so cua thread hien tai; fallback ve ACTIVE_HWND (thread GUI/WD
+    cu → giu hanh vi cu)."""
+    return getattr(WINCTX, "hwnd", None) or ACTIVE_HWND[0]
+
+def win_geom(hwnd):
+    """(L,T,W,H, cx,cy) cua vung CLIENT cua hwnd — cx,cy = TAM NHAN VAT
+    (anchor 400,300 trong client). Thread-safe: khong dung ARECT/ACX toan cuc
+    (N thread cung goi tren N cua so khac nhau). None neu cua so chet."""
+    r = find_window_hwnd(hwnd)
+    if not r:
+        return None
+    (L, T, W, H), _ = r
+    return (L, T, W, H, L + ANCHOR_X, T + ANCHOR_Y)
+
+
+def run_flag(v=None):
+    """running[0] dang-threads: thread khac co the chay goto() song song →
+    co so phai thread-local, GUI/manual van dung cai toan cuc."""
+    if v is not None:
+        RUN.v = v
+    hv = getattr(RUN, "v", None)
+    return bool(RUNNING0[0]) if hv is None else hv
+
 def state_reader(pid):
-    rd = _STATE_R.get(pid)
-    if rd is None:
-        rd = _STATE_R[pid] = mu_state.FlagReader(pid)
-    return rd
+    # 2 worker + watchdog cung pid → 1 FlagReader (khong double-create:
+    # handle pymem mo cu bo roi + none_rate bi chia hai)
+    with _SR_LOCK:
+        rd = _STATE_R.get(pid)
+        if rd is None:
+            rd = _STATE_R[pid] = mu_state.FlagReader(pid)
+        return rd
+
+FLAG_TRUST = [1]              # 1 = TIN CO HOAN TOAN (PM mode): KHONG bao gio
+                              #     chup anh/doi chieu anh — yeu cau chay
+                              #     song song, khong active cua so.
+                              # 0 = che do cu: doi chieu flag↔anh 1 lan/pid.
 
 def state_read(hwnd, name):
-    """True/False theo majority vote; None = khong dung flags → caller ve anh.
+    """True/False theo majority vote cua byte memory; None = khong co du lieu
+    cờ cho cua so nay (file thieu / pid chet / toan bo byte doc hong).
 
-    SANITY ONE-SHOT: offset la DIA CHI HEAP → sau khi restart game co the
-    thanh rac doc ra gia tri LA im lang. Lan dau dung flags cho 1 pid: doi
-    chieu `GiamTai` (flag) voi icon that tren man hinh (1 lan keo cua so
-    len dinh). Khop → tin flags ca session cua pid do. Lech → flags pid đo
-    bi VO HIEU (offset cu), quay ve verify anh — khong bao gio quyet dang
-    loi tren so rac. Sau khi restart game: pid moi → tu dong doi chieu lai."""
+    PM mode + FLAG_TRUST=1 (MAC DINH): thuan memory — khong cham camera,
+    khong keo cua so len. Restart game → pid moi → FlagReader tu mo lai;
+    offset heap LEch gia tri thi FlagReader van tra duoc bool (he thong
+    coi flag la dung — dao dong theo nut HUD se cho thay neu sai).
+    FLAG_TRUST=0: giu sanity one-shot doi chieu flag voi anh (1 lan/pid)."""
     if not PM_MODE[0] or not hwnd:
         return None
-    if not mu_state.load_flags():          # file missing → fallback anh (1 lan)
+    if not mu_state.load_flags():          # file missing → caller lo theo cach cu
         return None
     pid = pid_of(hwnd)
     if not pid:
         return None
     rd = state_reader(pid)
+    if FLAG_TRUST[0]:
+        v = rd.read(name)
+        if v is None and rd.none_rate() > 0.8 and pid not in PM_NOTE_DONE:
+            PM_NOTE_DONE.add(pid)
+            log_arrive(f"  flags: pid={pid} khong doc duoc byte nao — offset "
+                       f"HEP DA CU (game restart)? Quet lai HookProbe → luu "
+                       f"mu_goto_flags.json → mo lai tool.")
+        return v
+    # ============ CHE DO CU (flag_trust=0): sanity doi chieu anh ============
     t = _FLAG_TRUST.get(pid)
     if t is None:
         fr = rd.read("GiamTai")
         iv = icon_present(LT_IMG, hwnd=hwnd)
         if iv is None and fr is not None:
-            # Khong verify duoc anh (thieu template game S21?) → KHONG the
-            # bac bo flag: tin flag (best effort), but chi mot lan for pid.
             _FLAG_TRUST[pid] = True
-            log_arrive(f"  flags: pid={pid} — anh khong verify duoc → dung "
-                       f"flags (khong kiem tra anh duoc noua).")
             return rd.read(name)
         if fr is None or iv is None:
             if rd.none_rate() > 0.8:
                 _FLAG_TRUST[pid] = False
-                log_arrive(f"  flags: pid={pid} khong doc duoc byte nao → "
-                           f"dung ANH (quet offset moi trong HookProbe roi "
-                           f"luu lai mu_goto_flags.json).")
             return None
         if bool(fr) == bool(iv):
             _FLAG_TRUST[pid] = True
-            log_arrive(f"  flags: ✓ khop anh (GiamTai flag={int(fr)}) → "
-                       f"pid={pid} dung flags, khong can chup anh nua.")
+            log_arrive(f"  flags: ✓ khop anh → pid={pid} dung flags.")
         else:
             _FLAG_TRUST[pid] = False
-            log_arrive(f"  flags: ✗ LECH voi anh (flag={int(fr)} vs "
-                       f"icon={int(iv)}) → offset CU (game da restart?). "
-                       f"pid={pid} quy ve verify ANH.")
+            log_arrive(f"  flags: ✗ LECH anh (flag={int(fr)} icon={int(iv)}) "
+                       f"→ offset cu, pid={pid} ve verify ANH.")
         t = _FLAG_TRUST[pid]
     if not t:
         return None
     return rd.read(name)
 
-def wait_flag(hwnd, name, want, press, tries=10, tag=""):
+def wait_flag(hwnd, name, want, press, tries=10, tag="", need_hud=None):
     """Vong doi co: doc flag → dung? xong → sai? bam press() → 1s → lap.
     True/False = ket luan; None = khong co flag → caller dung anh."""
     for i in range(tries):
@@ -759,6 +830,12 @@ def wait_flag(hwnd, name, want, press, tries=10, tag=""):
             LT_ON[hwnd] = st if name == "GiamTai" else LT_ON.get(hwnd)
             return True
         if i == 0:
+            if need_hud and not hud_ready(need_hud):
+                log_arrive(f"  {tag}: can bam nut HUD '{need_hud}' nhung CHUA "
+                           f"hieu chuan (tab Log → 📷 Camera → ◎ {need_hud}).")
+                if name == "GiamTai":
+                    LT_ON[hwnd] = None
+                return False
             log_arrive(f"  {tag}: flag {name}={int(st)} khong phai {int(want)} "
                        f"→ bam lan {i+1}")
         press(hwnd)
@@ -768,6 +845,44 @@ def wait_flag(hwnd, name, want, press, tries=10, tag=""):
         LT_ON[hwnd] = None
     log_arrive(f"  {tag}: {tries} LAN flag {name} van chua = {int(want)}.")
     return False
+
+
+def press_hud(hwnd, key):
+    """PM CLICK vao nut HUD da hieu chuan `key` (mobile/helper/lt_on/lt_off)
+    tai toa do CLIENT cua CHINH cua so hwnd (thread-safe, nen duoc).
+    True = da bam; False = chua hieu chuan nut nay."""
+    pt = HUD_BTN.get(key)
+    if not (pt and hwnd and mu_pm.is_alive(hwnd)):
+        return False
+    return mu_pm.pm_click(hwnd, pt[0], pt[1])
+
+def hud_ready(key):
+    return key in HUD_BTN
+
+def ensure_mobile(hwnd, tries=10):
+    """TRUOC khi bat Helper/Giam tai: CHE DO MOBILE phai dang BAT.
+    Doc flag 'MobileMod' → dung roi → xong. Sai → PM CLICK nut HUD 'mobile'
+    → doc lai, toi da `tries`. PM mode thuan memory:
+      True  = MobileMod dang BAT (hoc sau khi bam)
+      False = khong bat duoc → caller DUNG buoc Helper/Giam tai
+      None  = khong kiem duoc (pid khong doc ra flag / chua hieu chuan nut
+              'mobile' → bo qua dieu kien mot cach trong sach, co log)."""
+    if not PM_MODE[0]:
+        return None
+    if state_read(hwnd, "MobileMod") is None:
+        log_arrive("  MobileMod: khong doc duoc flag → bo qua dieu kien.")
+        return None
+    if not hud_ready("mobile"):
+        log_arrive("  MobileMod: CHUA hieu chuan nut HUD 'mobile' → bo qua "
+                   "dieu kien (tab Log → 📷 Camera → ◎ Mobile de bat buoc).")
+        return None
+    r = wait_flag(hwnd, "MobileMod", True,
+                  lambda h: press_hud(h, "mobile"), tries, tag="MobileMod",
+                  need_hud="mobile")
+    if r is False:
+        log_arrive("  MobileMod CHUA bat duoc → KHONG bat Helper/Giam tai, "
+                   "hoan cua so vong sau.")
+    return r
 
 
 def at_spot(cx, cy, tx, ty, tol=POS_TOL):
@@ -980,6 +1095,8 @@ def click_at(sx, sy, right=False, hwnd=None):
 # KHONG bi chan -> PgUp van dung duoc tool. Hook phai cai o main thread
 # (tkinter mainloop pump message cho no).
 MOUSE_BLOCK = [0]   # reference count: >0 = chan chuot vat ly (goto/train/reset
+_MOUSEB_LOCK = threading.Lock()   # RMW giua 2 worker che do vat ly
+_LOG_LINES = [0]    # dem dong log (GUI thread tang) — doc lien tu thread khac
                     # long nhau → phai dem, ai sau cung moi duoc tat)
 class MSLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [("pt", wt.POINT), ("mouseData", wt.DWORD), ("flags", wt.DWORD),
@@ -1105,12 +1222,15 @@ def _release_vk(vk, ext=False):
 
 
 def send_home(hwnd=None):
-    """Gui phim Home (Helper). PM mode + da hieu chuan nut HUD → PM CLICK
-    vao nut Helper (background). Chua co toa do nut → ve phim that + guard
-    focus."""
-    hwnd = hwnd or ACTIVE_HWND[0]
-    if pm_target(hwnd) and "helper" in HUD_BTN:
-        mu_pm.pm_click(hwnd, *HUD_BTN["helper"])
+    """PM mode: PM CLICK nut HUD 'helper' — nen, khong active cua so.
+    CHUA hieu chuan nut → bao ro ro (KHONG lén dung phim that vi phim
+    that = phai active cua so = pha song song). Mode vat ly: phim Home."""
+    hwnd = hwnd or win_hwnd()
+    if pm_target(hwnd):
+        if press_hud(hwnd, "helper"):
+            return
+        log_arrive("  Home: CHUA hieu chuan toa do nut HUD 'helper' "
+                   "(tab Log → 📷 Camera → ◎ Nut Helper).")
         return
     if not guard_foreground(hwnd, "Home"):
         return
@@ -1556,45 +1676,48 @@ def li_save_accounts(cfg, accs):
 
 
 def send_home_verified(hwnd=None):
-    """Toi duoc dich: 1s sau -> co che Home nhu cu: nhan Home -> 1s -> kiem
-    tra anh Helper -> chua co -> nhan lai -> ... TOI DA 10 LAN. Khong thay
-    sau 10 lan → tra False (caller hoan cua so, quay lai vong sau — KHONG
-    lap vo han kiet ca chuoi). PgUp thoat ngay.
+    """BAT Helper va XAC MINH da bat that (toi da 10 lan → False → caller
+    hoan cua so vong sau). PgUp thoat ngay.
 
-    NGUYEN VAN KIEM TRA:
-    1. TAT GIAM TAI TRUOC — icon Giảm tải còn bật thì Home KHÔNG bật được
-       Helper → tim Helper vĩnh viễn không thấy = vòng lặp vô hạn (hiện
-       tượng thật user gặp). send_ctrl_f_off tự kiểm tra: icon đã mất
-       sẵn thì không bấm phím thừa.
-    2. ACTIVE + KHONG BỊ CHE — restore (nếu minimize) + kéo lên foreground
-       TRƯỚC khi chụp ảnh, tránh nhận diện sai."""
-    hwnd = hwnd or ACTIVE_HWND[0]
+    THU TUT CHUAN (ca 2 mode):
+      1. TAT GIAM TAI truoc — Giam tai con bat thi Home/khong nut nao len
+         duoc Helper → vong lap vo han.
+      2. PM mode: MobileMod phai BAT truoc (ensure_mobile) → bat Helper qua
+         nut HUD 'helper' → doc FLAG memory 'Helper' xac nhan. THUAN BO NHO:
+         khong bao gio chup anh — chup anh phai keo cua so len dinh, dung
+         trong the gioi N cua so song song (10/PC thuong gap).
+      3. Mode vat ly (pm_mode=0): giu cu — verify anh + phim Home."""
+    hwnd = hwnd or win_hwnd()
     if not hwnd:
         return False
-    # ===== NEW (PM): co flag Helper trong memory → khong can chup anh,
-    # khong can foreground, game o day minimize van xac dinh dung =====
-    if PM_MODE[0] and mu_state.load_flags():
-        # Giam tai van phai TAT truoc (Home khong len Helper khi Giam tai bat)
-        if not send_ctrl_f_off(hwnd):
-            log_arrive("  Helper: chua thoat duoc Giam tai → KHONG kiem tra "
-                       "Helper, hoan cua so vong sau.")
-            return False
-        r = wait_flag(hwnd, "Helper", True, send_home, tag="Helper")
-        if r is not None:
-            if r:
-                log_arrive("  Helper: flag memory = ON (nen, khong can anh).")
-            else:
-                log_arrive("  Helper: 10 LAN flag van OFF → hoan cua so, "
-                           "quay lai vong duyet sau.")
-            return r
-        # flag doc khong duoc → roi xuong duong cu (verify anh)
-    # ===== OLD: verify anh + phim that =====
-    # (1) Giảm tai phai TẮT trước — đang bật thì Home không lên Helper
+    # 1) Giam tai phai TAT truoc
     if not send_ctrl_f_off(hwnd):
         log_arrive("  Helper: chua thoat duoc Giam tai → KHONG kiem tra "
                    "Helper, hoan cua so vong sau.")
         return False
-    # (2) Dam bao cua so active, khong bi che truoc khi chup anh
+    # 2) PM mode → thuan memory + HUD
+    if pm_target(hwnd):
+        m = ensure_mobile(hwnd)
+        if m is False:
+            return False
+        if m is None and hud_ready("mobile"):
+            log_arrive("  Helper: khong doc duoc flag MobileMod → bo dieu kien, "
+                       "thu bat Helper truc tiep.")
+        r = wait_flag(hwnd, "Helper", True,
+                      lambda h: press_hud(h, "helper"), tag="Helper",
+                        need_hud="helper")
+        if r is None and FLAG_TRUST[0]:
+            log_arrive("  Helper: khong doc duoc flag Helper → hoan cua so "
+                       "(kiem tra mu_goto_flags.json / nut HUD).")
+            return False
+        if r is not None:
+            return bool(r)
+        # FLAG_TRUST=0 (nut "che do cu"): ve verify ANH + Home that nhu v1.6
+        log_arrive("  Helper: flag khong tin cay → ve verify anh (che do cu).")
+    if PM_MODE[0] and not pm_target(hwnd):
+        # PM bat nhung cua so nay khong phai game song → vat ly cho no
+        pass
+    # 3) ===== MODE VAT LY: verify anh + phim that =====
     try:
         if user32.IsIconic(hwnd):
             user32.ShowWindow(hwnd, 9)        # SW_RESTORE
@@ -1613,8 +1736,6 @@ def send_home_verified(hwnd=None):
             return False
         p = icon_present(HELPER_IMG, hwnd=hwnd)
         if p is None:
-            # Khong verify duoc bang anh → bam Home 1 lan (best effort) va
-            # di tiep; KHONG im lang bo qua nhu truoc day.
             log_arrive("  Helper: khong verify duoc anh → bam Home 1 lan.")
             send_home(hwnd)
             time.sleep(1.0)
@@ -1632,15 +1753,13 @@ def send_home_verified(hwnd=None):
                "quay lai vong duyet sau.")
     return False
 
-
 def send_ctrl_f(hwnd=None):
     """Gui phep bat/tat Giam tai. PM mode + da hieu chuan nut HUD → PM
     CLICK vao nut Giam tai (background, khong can focus). Khong co toa do
     nut → Ctrl+F scan code that nhu cu (can foreground)."""
-    hwnd = hwnd or ACTIVE_HWND[0]
-    if pm_target(hwnd) and "lt" in HUD_BTN:
-        mu_pm.pm_click(hwnd, *HUD_BTN["lt"])
-        return
+    hwnd = hwnd or win_hwnd()
+    # (PM mode dung nut lt_on/lt_off rieng qua send_ctrl_f_on/off; day =
+    #  duong VAT LY — chi Ctrl+F that, can foreground.)
     if not guard_foreground(hwnd, "Ctrl+F"):
         log_arrive(f"  Ctrl+F: khong giu duoc focus {hwnd} — "
                    f"bo qua de tranh phim roi vao cua so khac!")
@@ -1662,19 +1781,27 @@ LT_ON = {}
 
 
 def send_ctrl_f_on(hwnd=None):
-    """Vao Giam tai theo dung spec:
-    tim hinh → KHONG thay → gui Ctrl+F → 1s sau kiem tra → THAY → dung.
-    (Chua thay → bam lai...) lap lai cho toi khi THAY icon.
-    Moi lan bam deu dam bao Ctrl+F roi DUNG cua so hwnd (focus + ACTIVE_HWND).
-    TOI DA 10 LAN de khong ket khi phim khong toi; ghi nho ON/OFF theo t.
-    CO FLAG memory (mu_goto_flags.json) → doc byte, khong chang camera,
-    khong can cua so foreground; bam = PM CLICK nut HUD / phim that."""
-    hwnd = hwnd or ACTIVE_HWND[0]
-    # ===== NEW: co flag → majority vote, bo qua hoan toan viec chup anh =====
-    r = wait_flag(hwnd, "GiamTai", True, send_ctrl_f, tag="Giam tai ON")
-    if r is not None:
-        return r
-    # ===== OLD: verify anh (can cua so tren dinh) =====
+    """BAT Giam tai. Thu tu chuan (PM mode): MobileMod BAT truoc → flag
+    GiamTai=1? sai → PM CLICK nut HUD 'lt_on' → 1s → doc lai, toi da 10.
+    THUAN MEMORY — khong bao gio chup anh (chup anh = keo cua so len dinh,
+    pha song song). Thieu flag → False kem log nguyen nhan."""
+    hwnd = hwnd or win_hwnd()
+    if pm_target(hwnd):
+        m = ensure_mobile(hwnd)
+        if m is False:
+            return False
+        r = wait_flag(hwnd, "GiamTai", True,
+                      lambda h: press_hud(h, "lt_on"), tag="Giam tai ON",
+                      need_hud="lt_on")
+        if r is None and FLAG_TRUST[0]:
+            log_arrive("  Giam tai ON: khong doc duoc flag GiamTai → kiem tra "
+                       "mu_goto_flags.json (quet lai HookProbe sau khi restart).")
+            return False
+        if r is not None:
+            return bool(r)
+        # FLAG_TRUST=0 → ve duong cu: anh + Ctrl+F that
+        log_arrive("  Giam tai ON: flag khong tin cay → ve verify anh.")
+    # ===== MODE VAT LY (pm_mode=0): giu nguyen anh + Ctrl+F =====
     i = 0
     while True:
         if STOP_REQUESTED[0] or check_stop_key():
@@ -1703,22 +1830,23 @@ def send_ctrl_f_on(hwnd=None):
         send_ctrl_f(hwnd)
         time.sleep(1.0)
 
-
 def send_ctrl_f_off(hwnd=None):
-    """Thoat Giam tai theo dung spec:
-    tim hinh → THAY → gui Ctrl+F → 1s sau kiem tra → KHONG thay → dung.
-    (Van thay → bam lai...) lap lai cho toi khi KHONG con thay icon.
-    Moi lan bam deu dam bao Ctrl+F roi DUNG cua so hwnd.
-    TOI DA 10 LAN de khong ket khi phim khong toi.
-    Tra True khi icon da mat / khong co template; False khi 10 lan khong xong.
-    CHE DO DON GIAN khong o day — run_visit goi RIENG sau khi off thanh cong.
-    CO FLAG memory → doc byte, khong can anh/foreground."""
-    hwnd = hwnd or ACTIVE_HWND[0]
-    # ===== NEW: co flag → doc byte, bam nut HUD neu sai =====
-    r = wait_flag(hwnd, "GiamTai", False, send_ctrl_f, tag="Giam tai OFF")
-    if r is not None:
-        return r
-    # ===== OLD: verify anh =====
+    """THOAT Giam tai. PM mode: flag GiamTai=0? sai → PM CLICK nut HUD
+    'lt_off' — NUT THOAT RIENG (Ctrl+F la toggle; bam lai nut BAT se vo tinh
+    BAT LAI khi dang muon tat). Toi da 10. THUAN MEMORY, khong anh."""
+    hwnd = hwnd or win_hwnd()
+    if pm_target(hwnd):
+        r = wait_flag(hwnd, "GiamTai", False,
+                      lambda h: press_hud(h, "lt_off"), tag="Giam tai OFF",
+                       need_hud="lt_off")
+        if r is None and FLAG_TRUST[0]:
+            log_arrive("  Giam tai OFF: khong doc duoc flag GiamTai.")
+            return False
+        if r is not None:
+            return bool(r)
+        # FLAG_TRUST=0 → ve duong cu: anh + Ctrl+F that
+        log_arrive("  Giam tai OFF: flag khong tin cay → ve verify anh.")
+    # ===== MODE VAT LY: anh + Ctrl+F =====
     i = 0
     while True:
         if STOP_REQUESTED[0] or check_stop_key():
@@ -1746,7 +1874,6 @@ def send_ctrl_f_off(hwnd=None):
                    f" (vao cua so {hwnd:#x}), 1s sau kiem tra")
         send_ctrl_f(hwnd)
         time.sleep(1.0)
-
 
 # log_arrive duoc goi tu cac ham CAP MODULE (send_home_verified,
 # send_ctrl_f_on/off...) — ma `root` / `_log_add` chi ton tai BEN TRONG main().
@@ -1951,9 +2078,10 @@ STOP_REQUESTED = [False]
 # PAUSE_REQUESTED: watchdog (tab LI) dung tam TOAN BO thao tac input de mo
 # lai cua so game bi dong. Moi vong lap bam-phim/click check co nay tai
 # ranh gioi an toan (giua 2 lenh, giua 2 click) → dung trong ≤2s, khong
-# preempt giua chung 1 lenh. MOVE_ABORT: huy 1 luot di dang dau.
+# preempt giua chung 1 lenh. MOVE_ABORT: set cac hwnd watchdog dang mo lai —
+# CHI huy luot di DANG DAU cua cua so do; 5 cua so lanh van di tiep.
 PAUSE_REQUESTED = [False]
-MOVE_ABORT = [False]
+MOVE_ABORT = set()
 WD_BUSY = [False]         # watchdog dang relogin — nut "Chay login" tu choi
 WD_THREAD = [None]        # thread watchdog — wait_pause MIEN cho no (no goi
                           # li_run_account → send_home_verified → se tu cho
@@ -1987,8 +2115,10 @@ def wait_pause(tag=""):
     while PAUSE_REQUESTED[0]:
         if STOP_REQUESTED[0] or check_stop_key():
             return False
-        if time.time() - t0 > 600:      # watchdog treo >10p → mac cho chay
-            log_arrive(f"  {tag}: watchdog qua 10 phut → bu qua cho chay")
+        if not WD_BUSY[0] and time.time() - t0 > 60:
+            # co PAUSE con ma WD da thoat finally bat thuong → du 60s thi
+            # bu qua, tranh khoa cheo vo han.
+            log_arrive(f"  {tag}: PAUSE tong (WD khong busy) → bu qua cho chay")
             break
         time.sleep(0.25)
     log_arrive(f"  {tag}: watchdog xong → tiep tuc thao tac")
@@ -2288,6 +2418,7 @@ def main():
 
     # --- Da cua so: moi cua so game (pid) co Pymem rieng ---
     PMS = {}                      # pid -> pymem.Pymem
+    _PM_LOCK = threading.Lock()   # get_pm_for: loai race mo/pop/recreate
     ARECT = [None]                # client rect cua cua so dang ACTIVE
     ACX = [0]
     ACY = [0]
@@ -2295,7 +2426,15 @@ def main():
     def get_pm_for(hwnd):
         """Pymem gan voi pid cua hwnd (mo lazy, tu choi khi hong). Process da
         chet → nho handle cu ra khoi PMS (#9) de pid tai su dung khong dung
-        handle rac."""
+        handle rac. _PM_LOCK: a thread pop/close trong luc b thread doc →
+        'Mat ket noi' gia → loại trừ."""
+        _PM_LOCK.acquire()
+        try:
+            return _get_pm_for_inner(hwnd)
+        finally:
+            _PM_LOCK.release()
+
+    def _get_pm_for_inner(hwnd):
         pid = wt.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         pid = pid.value
@@ -2343,7 +2482,7 @@ def main():
     else:
         print("[window] Chua mo game — UI van chay; mo main.exe roi thao tac.")
 
-    running = [False]
+    running = RUNNING0          # alias toan cuc: manual/GUI + run_flag() fallback
 
     def stop():
         running[0] = False
@@ -2522,43 +2661,54 @@ def main():
     def set_status(m):
         log_add(f"[*] {m}")
 
-    def capture_icon(save_path, label, grab_fn=None):
-        """Chup anh client game -> VE LEN overlay (den 100%) -> keo chuot
-        quanh bieu tuong TRUC TIEP TREN ANH (ty le 1:1, khong qua toa do man
-        hinh → hong khi game off-screen/DPI scaling) -> luu template PNG.
-        grab_fn=None -> grab_client (game); truyen ham khac de chup cua so
-        launcher cho tab LI."""
+    def _overlay_from_shot(ov, shot, hint):
+        """Dat ov (Toplevel den, crosshair) vua khit Anh shot: thu nho neu
+        anh lon hon man hinh — KHONG BAO GIO phong lan ra ngoai screen.
+        Tra (canvas, scale, ox, oy, tk_img)."""
+        from PIL import Image, ImageTk
+        SW, SH = ov.winfo_screenwidth(), ov.winfo_screenheight()
+        BAR = 30
+        scale = min(1.6, (SW - 40) / float(shot.width),
+                    (SH - BAR - 60) / float(shot.height))
+        scale = max(0.3, scale)
+        sc_w = max(8, int(round(shot.width * scale)))
+        sc_h = max(8, int(round(shot.height * scale)))
+        ov.geometry(f"{sc_w}x{sc_h + BAR}"
+                    f"+{max(0, (SW - sc_w) // 2)}+{max(0, (SH - sc_h - BAR) // 3)}")
+        cv = tk.Canvas(ov, width=sc_w, height=sc_h + BAR, bg="black",
+                       highlightthickness=0, cursor="crosshair")
+        cv.pack(fill="both", expand=True)
+        im = shot if abs(scale - 1) < 0.01 else shot.resize(
+            (sc_w, sc_h), Image.LANCZOS)
+        tk_img = ImageTk.PhotoImage(im)
+        ox, oy = (sc_w - im.width) // 2, BAR
+        cv.create_image(ox, oy, anchor="nw", image=tk_img)
+        cv._img_ref = tk_img
+        cv.create_text(sc_w // 2, 14, fill="#FFD60A", anchor="center",
+                       font=("Segoe UI", 11, "bold"), text=hint)
+        return cv, scale, ox, oy
+
+    def capture_icon(save_path, label, grab_fn=None, on_done=None):
+        """Chup anh client game -> cua so DEN VUA KHIT ANH (thu nho vừa
+        man hinh, khong bao gio tran) -> keo vung quanh bieu tuong tren anh
+        -> luu template PNG. grab_fn=None -> grab_client (game).
+        on_done: goi SAU khi overlay dong (thoong nhat cho modal withdraw
+        ben ngoai mo lai dung thoi diem)."""
         shot = (grab_fn or grab_client)()
         if shot is None:
             set_status("Khong chup duoc man hinh (mo cua so nguon truoc).")
+            if on_done:
+                on_done()              # modal da withdraw → PHAI mo lai (fix v1.8)
             return False
-        from PIL import Image, ImageTk
-        prev_grab = root.grab_current()   # modal dang mo (LI Config) — overlay
-                                          # phai gianh grab thi moi keo duoc
+        prev_grab = root.grab_current()
         ov = tk.Toplevel(root)
-        ov.attributes("-fullscreen", True)
         ov.attributes("-topmost", True)
-        ov.configure(bg="black", cursor="crosshair")
+        ov.configure(bg="black")
         ov.grab_set()
         ov.lift()
-        cv = tk.Canvas(ov, bg="black", highlightthickness=0)
-        cv.pack(fill="both", expand=True)
-        SW, SH = ov.winfo_screenwidth(), ov.winfo_screenheight()
-        # Phong to (nguyen) neu client nho, de keo vung chinh xac hon
-        scale = 1
-        if shot.width < SW // 2 and shot.height < SH // 2:
-            scale = min(2, SW // shot.width, SH // shot.height)
-        im = shot if scale == 1 else shot.resize(
-            (shot.width * scale, shot.height * scale), Image.LANCZOS)
-        tk_img = ImageTk.PhotoImage(im)
-        ox = (SW - im.width) // 2
-        oy = (SH - im.height) // 2
-        cv.create_image(ox, oy, anchor="nw", image=tk_img)
-        cv._img_ref = tk_img
-        cv.create_text(SW // 2, 24, fill="#FFD60A",
-                       font=("Segoe UI", 17, "bold"),
-                       text=f"Keo vung QUANH bieu tuong {label} tren anh  "
-                            f"(x{scale}, Esc de huy)")
+        cv, scale, ox, oy = _overlay_from_shot(
+            ov, shot, f"Keo vung QUANH bieu tuong {label}  "
+                      f"(x{scale:.2f}, Esc de huy)")
         box = {"x0": 0, "y0": 0, "id": None}
 
         def press(e):
@@ -2574,16 +2724,25 @@ def main():
             x1, y1 = min(box["x0"], e.x) - ox, min(box["y0"], e.y) - oy
             x2, y2 = max(box["x0"], e.x) - ox, max(box["y0"], e.y) - oy
             ov.destroy()
-            x1, y1 = max(0, x1 // scale), max(0, y1 // scale)
-            x2, y2 = min(shot.width, x2 // scale), min(shot.height, y2 // scale)
-            if x2 - x1 < 4 or y2 - y1 < 4:
-                set_status(f"Vung chon {x2-x1}x{y2-y1} qua nho (<4px), chua luu.")
-                return
-            shot.crop((x1, y1, x2, y2)).save(save_path)
-            set_status(f"Da luu template {label}: {save_path}")
+            try:
+                x1 = max(0, int(round(x1 / scale))); y1 = max(0, int(round(y1 / scale)))
+                x2 = min(shot.width, int(round(x2 / scale)))
+                y2 = min(shot.height, int(round(y2 / scale)))
+                if x2 - x1 < 4 or y2 - y1 < 4:
+                    set_status(f"Vung chon {x2-x1}x{y2-y1} qua nho (<4px), chua luu.")
+                    return
+                shot.crop((x1, y1, x2, y2)).save(save_path)
+                set_status(f"Da luu template {label}: {save_path}")
+            except Exception as _e:
+                set_status(f"Loi luu template: {_e}")
+            finally:
+                if on_done:
+                    on_done()      # moi duong ra (oke/nho/hong) → modal quay lai
 
         def esc(_e):
             ov.destroy()
+            if on_done:
+                on_done()
 
         cv.bind("<ButtonPress-1>", press)
         cv.bind("<B1-Motion>", drag)
@@ -2591,7 +2750,23 @@ def main():
         ov.bind("<Escape>", esc)
         # dong overlay → tra grab ve modal cu (neu co) de tiep tuc dung
         ov.bind("<Destroy>", lambda _e: prev_grab and prev_grab.grab_set())
+        # nut X cua overlay = nhu Esc: destroy → <Destroy> restore grab,
+        # NHUNG on_done cung PHAI chay (modal withdraw san → deiconify lai).
+        ov.protocol("WM_DELETE_WINDOW",
+                    lambda: (ov.destroy(), on_done and on_done()))
         return True
+
+    def _outer_origin(w):
+        """Goc NGOAI (frame+titlebar) — winfo_rootx tra goc CLIENT → modal
+        overlay lech root +8/+31px. Minimized → ve rootx nhu cu."""
+        try:
+            gw = user32.GetAncestor(w.winfo_id(), 2)   # GA_ROOT
+            r = wt.RECT()
+            if gw and user32.GetWindowRect(gw, ctypes.byref(r)) and r.left > -30000:
+                return r.left, r.top
+        except Exception:
+            pass
+        return w.winfo_rootx(), w.winfo_rooty()
 
     def center_on_root(dlg, w=None, h=None):
         """Dat dlg vao GIUA cua so tool (tinh sau khi ep layout xong)."""
@@ -2602,18 +2777,32 @@ def main():
         ry = root.winfo_rooty() + (root.winfo_height() - dh) // 2
         dlg.geometry(f"+{max(rx, 0)}+{max(ry, 0)}")
 
+    CAP_DLG = [None]              # 1 modal Camera — bam lap lai = lift
     def open_capture_dialog():
-        """Modal chon loai anh can chup (Helper / Giam tai / ...), hien xem
-        truoc anh dang luu. Danh sach lay tu ICON_ITEMS.
-        PM mode: + 2 nut hieu chuan TOA DO NUT HUD (Helper/Giam tai) —
-        bam nut → overlay anh game → bam 1 diem → luu toa do CLIENT vao
-        cfg (hud_btn) → send_home/send_ctrl_f se PM CLICK diem do nen."""
+        """Modal PM/Camera:
+        - checkbox Chế độ PostMessage + trang thai file flags
+        - 2 nut 📷 chụp template ANH Helper / Giảm tai (che do vat ly)
+        - SECTION HUD 4 nut ◎ (Mobile · Helper · Vào GT · Thoát GT): bam →
+          overlay anh game → bam 1 DIEM → luu toa do CLIENT; bang toa do
+          ngay duoi nut cho doc/doi chieu; nut 'Xóa tọa độ' lam lai tu dau."""
+        _cd = CAP_DLG[0]
+        if _cd is not None:
+            try:
+                if _cd.winfo_exists():
+                    _cd.deiconify()        # guard: co the dang withdraw giua
+                    _cd.lift()             #   capture → mo lai duoc
+                    return                 # mo san → khong dechup 2-3 lang
+            except Exception:
+                pass
         dlg = tk.Toplevel(root)
+        CAP_DLG[0] = dlg
+        dlg.bind("<Destroy>", lambda e: e.widget is dlg and
+                 CAP_DLG.__setitem__(0, None), add="+")
         dlg.title("Chọn ảnh cần chụp")
         dlg.transient(root)
         dlg.grab_set()
         dlg.configure(bg=CARD)
-        # --- PM mode toggle + trang thai flags ---
+        # --- PM mode toggle ---
         pmvar = tk.BooleanVar(value=bool(PM_MODE[0]))
         def _pm_toggle():
             PM_MODE[0] = 1 if pmvar.get() else 0
@@ -2621,70 +2810,115 @@ def main():
             set_status(f"PM mode: {'BAT (nen, khong chem chuot)' if PM_MODE[0] else 'TAT (vat ly cu)'}.")
         tk.Checkbutton(dlg, text="Chế độ PostMessage (nền — không chiếm chuột/phím)",
                        variable=pmvar, command=_pm_toggle, font=f_small,
-                       bg=CARD, activebackground=CARD).pack(anchor="w", padx=14, pady=(8, 0))
+                       bg=CARD, activebackground=CARD).pack(pady=(10, 0))
+        ftvar = tk.IntVar(value=FLAG_TRUST[0])
+        def _ft_toggle():
+            FLAG_TRUST[0] = 1 if ftvar.get() else 0
+            _FLAG_TRUST.clear()          # pid nao cung phai do lai sanity
+            save_pm_cfg()
+            set_status("Doc co: THUAN MEMORY." if FLAG_TRUST[0] else
+                       "Doc co: che do cu — doi chieu flag↔anh 1 lan/pid.")
+        tk.Checkbutton(dlg, text="Tin cờ memory hoàn toàn (6+/10 window song song)",
+                       variable=ftvar, command=_ft_toggle, font=f_small,
+                       bg=CARD, activebackground=CARD).pack()
         fl = mu_state.load_flags()
-        _ftxt = ("flags: " + ", ".join(f"{k}({len(v)})" for k, v in sorted(fl.items()))
-                 if fl else "flags: CHUA co mu_goto_flags.json — se verify bang anh")
+        _ftxt = ("Flags memory: " + "  ".join(f"{k}({len(v)})" for k, v in sorted(fl.items()))
+                 if fl else "CHUA co mu_goto_flags.json — verify bang anh")
         tk.Label(dlg, text=_ftxt, font=f_small, fg=MUTED, bg=CARD
-                 ).pack(anchor="w", padx=14)
-        tk.Label(dlg, text="Chọn icon để chụp từ màn hình game:",
-                 font=f_body, fg=TEXT, bg=CARD).pack(padx=14, pady=(12, 6))
-        for name, path in ICON_ITEMS:
-            row = tk.Frame(dlg, bg=CARD)
-            row.pack(fill="x", padx=14, pady=3)
-            exists = os.path.exists(path)
-            b = tk.Button(row, text=f"📷  {name}" + ("  ✓" if exists else "  (chưa chụp)"),
-                          font=f_body, fg=TEXT, bg="#F0F0F3",
-                          activebackground="#E5E5EA", relief="flat", bd=0, anchor="w",
-                          command=lambda n=name, p=path: (dlg.destroy(),
-                                                          capture_icon(p, n)))
-            b.pack(side="left", fill="x", expand=True, ipady=6)
-            # Anh xem truoc (phong to 3x de de nhin)
-            if exists:
+                 ).pack(anchor="center", pady=(0, 6))
+
+        def _set_check(btn, ok):
+            try:
+                btn.configure(text=btn._base + ("  ✓" if ok else ""))
+            except Exception:
+                pass
+
+        # ---- section 1: chup anh template (can cho verify khi memory hong) ----
+        tk.Label(dlg, text="— Chụp ảnh template (fallback) —", font=f_small,
+                 fg=MUTED, bg=CARD).pack(anchor="w", padx=14, pady=(4, 0))
+        imgfr = tk.Frame(dlg, bg=CARD); imgfr.pack(fill="x", padx=14)
+        imgfr.grid_columnconfigure((0, 1), weight=1, uniform="cam")
+        cap_btns = {}
+        for _c, (name, path) in enumerate(ICON_ITEMS):
+            b = tk.Button(imgfr, text=f"📷 {name}", font=f_body, fg=TEXT,
+                          bg="#F0F0F3", activebackground="#E5E5EA",
+                          relief="flat", bd=0, anchor="center",
+                          command=lambda n=name, pp=path, bb=None: None)
+            b.grid(row=0, column=_c, sticky="ew", padx=3, pady=3, ipady=7)
+            def _cap(pp=path, n=name, bb=b):
+                def done(pp=pp, bb=bb):
+                    dlg.deiconify()
+                    # grab_set lien sau deiconify → cua so chua viewable, loi
+                    # im lang → modal mat grab (bam xuuyen duoc vung sau).
+                    def _regrab():
+                        try:
+                            dlg.grab_set()
+                        except Exception:
+                            pass      # dlg da bi destroy giua luong → bo qua
+                    dlg.after(50, _regrab)
+                    _set_check(bb, os.path.exists(pp))
+                dlg.withdraw()
+                capture_icon(pp, n, on_done=done)
+            b.configure(command=_cap)
+            b._base = f"📷 {name}"
+            _set_check(b, os.path.exists(path))
+            cap_btns[name] = b
+
+        # ---- section 2: hieu chuan 4 nut HUD ----
+        tk.Label(dlg, text="— Hiệu chuẩn 4 nút HUD (bấm 1 điểm trên ảnh) —",
+                 font=f_small, fg=MUTED, bg=CARD).pack(anchor="w", padx=14,
+                                                       pady=(8, 0))
+        hudfr = tk.Frame(dlg, bg=CARD); hudfr.pack(fill="x", padx=14)
+        for cc in range(2):
+            hudfr.grid_columnconfigure(cc, weight=1, uniform="hud")
+        def cap_hud(key, label, btn):
+            dlg.withdraw()
+            try:
+                pt = li_capture_coord_via_cursor()   # toa do CLIENT truc tiep
+            finally:
+                dlg.deiconify()
                 try:
-                    from PIL import Image, ImageTk
-                    im = Image.open(path)
-                    im = im.resize((max(1, im.width * 3), max(1, im.height * 3)),
-                                   Image.NEAREST)
-                    tk_img = ImageTk.PhotoImage(im)
-                    lbl = tk.Label(row, image=tk_img, bg=CARD, bd=1,
-                                   relief="solid")
-                    lbl.image = tk_img   # giu reference
-                    lbl.pack(side="right", padx=(8, 0))
+                    dlg.grab_set()
                 except Exception:
-                    pass
-        def cap_hud(key, label):
-            dlg.destroy()
-            pt = li_capture_coord_via_cursor()   # (x,y) WINDOW-relative
+                    pass             # gianh lai grab cua modal sau overlay
             if not pt:
                 return
-            g = COORD_HWND[0] or ACTIVE_HWND[0] or \
-                (find_window_hwnd() or (None, None))[1]
-            r = wt.RECT()
-            if g:
-                user32.GetWindowRect(g, ctypes.byref(r))
-            cl = (mu_pm.screen_to_client(g, r.left + pt[0], r.top + pt[1])
-                  if g else None)
-            if cl is None:
-                set_status("Khong quy duoc toa do client — chua luu HUD nut.")
-                return
-            HUD_BTN[key] = (int(cl[0]), int(cl[1]))
+            HUD_BTN[key] = (int(pt[0]), int(pt[1]))
             save_pm_cfg()
-            set_status(f"HUD {label} = client ({cl[0]},{cl[1]}) — PM se bam "
-                       f"vao diem nay thay phim {label}.")
-        hudfr = tk.Frame(dlg, bg=CARD); hudfr.pack(fill="x", padx=14, pady=(4, 0))
-        tk.Label(hudfr, text="PM mode — hiệu chuẩn nút HUD (chụp điểm trên ảnh game):",
-                 font=f_small, fg=MUTED, bg=CARD).pack(anchor="w")
-        ttk.Button(hudfr, text=f"◎ Nút Helper{' ✓' if 'helper' in HUD_BTN else ''}",
-                   command=lambda: cap_hud("helper", "Home")
-                   ).pack(side="left", pady=2, padx=(0, 4))
-        ttk.Button(hudfr, text=f"◎ Nút Giảm tải{' ✓' if 'lt' in HUD_BTN else ''}",
-                   command=lambda: cap_hud("lt", "Ctrl+F")
-                   ).pack(side="left", pady=2)
+            set_status(f"HUD {label} = client ({pt[0]},{pt[1]}).")
+            _set_check(btn, True)
+            hud_info.config(text=NL.join(f"{lbl}: " + (f"{HUD_BTN[k][0]:>4},{HUD_BTN[k][1]:>4}" if k in HUD_BTN else "--") for k, lbl in (("mobile", "Mobile "), ("helper", "Helper "), ("lt_on", "Vào GT "), ("lt_off", "Thoát GT"))) + "  (toa do client - tu dong luu)")
+        NL = chr(10)
+        hud_btns = {}
+        for _i, (k, lbl) in enumerate((("mobile", "◎ Mobile"),
+                                       ("helper", "◎ Helper"),
+                                       ("lt_on", "◎ Vào GT"),
+                                       ("lt_off", "◎ Thoát GT"))):
+            b = ttk.Button(hudfr, text=lbl)
+            b.grid(row=_i // 2, column=_i % 2, sticky="ew", padx=3, pady=3,
+                   ipady=4)
+            b._base = lbl
+            b.configure(command=lambda kk=k, ll=lbl, bb=b: cap_hud(kk, ll, bb))
+            _set_check(b, k in HUD_BTN)
+            hud_btns[k] = b
+        hud_info = tk.Label(dlg, font=("Consolas", 9), fg=SUBTEXT, bg=CARD,
+                            justify="center")
+        hud_info.pack(pady=(6, 0))
+        hud_info.config(text=NL.join(f"{lbl}: " + (f"{HUD_BTN[k][0]:>4},{HUD_BTN[k][1]:>4}" if k in HUD_BTN else "--") for k, lbl in (("mobile", "Mobile "), ("helper", "Helper "), ("lt_on", "Vào GT "), ("lt_off", "Thoát GT"))) + "  (toa do client - tu dong luu)")
+        ttk.Button(dlg, text="Xóa tọa độ HUD",
+                   command=lambda: (_hud_clear()) ).pack(pady=(6, 0))
+        def _hud_clear():
+            HUD_BTN.clear()
+            save_pm_cfg()
+            for bb in hud_btns.values():
+                _set_check(bb, False)
+            hud_info.config(text="— da xoa het —")
         tk.Button(dlg, text="Đóng", command=dlg.destroy, font=f_body,
                   fg=MUTED, bg=CARD, relief="flat", bd=0
-                  ).pack(padx=14, pady=(6, 12), anchor="e")
-        center_on_root(dlg)
+                  ).pack(pady=(10, 12))
+        # modal bang KICH THUOC + vi tri cua so tool (overlay dung khit)
+        _ox, _oy = _outer_origin(root)
+        dlg.geometry(f"{root.winfo_width()}x{root.winfo_height()}+{_ox}+{_oy}")
 
     # ---------- TAB 1: RR — HET NHU TAB LI: pill #F2F2F7, cham dau XUONG ----------
     # (xanh = cua so con song; DO = cua so dang duyet. Trong pill: bar tien
@@ -2843,7 +3077,17 @@ def main():
     # qua 3 lan fail (run_visit raise / goto hong ca chuoi) → nghi 5 phut,
     # duyet cua so khac truoc.
     WIN_COOLDOWN = {}
+    WIN_DEFER = 300.0       # so gian hoan cua so khi fail nhieu lan lien tiep
     WIN_FAILS = {}
+    WORKERS = []                      # (giu lenh — worker thread hien tai)
+    WIN_LOCKS = {}                    # hwnd -> Lock: 1 cua so 1 luot thao tac
+    _LK_GUARD = threading.Lock()      # cho race check-then-create ben duoi
+    def for_win_lock(h):
+        with _LK_GUARD:               # 2 thread cung tạo → 2 Lock khac nhau
+            lk = WIN_LOCKS.get(h)     #   = chong song-song-hwnd bi thung
+            if lk is None:
+                lk = WIN_LOCKS[h] = threading.Lock()
+            return lk
     # #5 stall watchdog dat co nay (cung STOP_REQUESTED de unwind); supervisor
     # phan biet: STOP co + STALL khong co = user dung that → khong restart.
     STALL_REQUESTED = [False]
@@ -3255,8 +3499,12 @@ def main():
 
     # ---- spot per-account: ROWS_MAP {key: rows5}; "(Chung)" = du lieu cu ----
     ROWS_MAP = load_rows_map()
+    _COMMON_ROWS = load_cfg()      # LUON goi: side-effect nap pm_mode/hud_btn/
+                                   # reset_points/add_lines — neu bo qua vi
+                                   # "(Chung)" da ton tai thi moi thu VE
+                                   # MAC DINH sau restart (HIGH audit v1.8).
     if "(Chung)" not in ROWS_MAP:
-        ROWS_MAP["(Chung)"] = load_cfg()
+        ROWS_MAP["(Chung)"] = _COMMON_ROWS
     SPOT_ACC_KEY = ["(Chung)"]
 
     # Khoi phuc bo dong "(Chung)" (TRUOC khi tao card — card doc min_vars[r]).
@@ -3515,7 +3763,6 @@ def main():
                         if a["user"] and a.get("enabled", True)]
         except Exception:
             return
-        wins = dict(list_game_windows())
         now = time.time()
         # 2) (bind cua so song do sync_bars/li_idle_watch dam nhiem 2s/lan —
         #    WD chi lo phat hien cua so CHET o buoc 4)
@@ -3529,11 +3776,14 @@ def main():
         if not dead:
             return
         PAUSE_REQUESTED[0] = True           # MOI THAO TAC DUNG (ranh gioi)
-        MOVE_ABORT[0] = True                # huy luot di dang dau
+        MOVE_ABORT.update(h for _u, h in dead)   # huy luot di CAC cua so chet
         WD_BUSY[0] = True
         try:
             time.sleep(3.0)                # cho vong input kip dung ranh gioi
             for u, _h in dead:
+                if LI_BUSY[0]:
+                    log_add("  WD: nguoi dung bam 'Chay login' → bo qua vong nay")
+                    break                  # re-check MOI account: tranh 2 launcher
                 try:
                     acc = next(a for a in li_snapshot_accounts()
                                if a["user"] == u)
@@ -3568,13 +3818,18 @@ def main():
                         break
                     if time.time() < dl:
                         time.sleep(2.0)
-                if not ok:
+                if not ok and time.time() < dl:
+                    # KIET 3 lan/3' that → nghi 10'. NGUOI dung PgUp giua
+                    # chuoi (time>=dl) → KHONG danh den cooldown oan.
                     LI_RELOGIN_WAIT[u] = time.time() + WD_RELOGIN_COOLDOWN
                     log_add(f"  ✗ WD {u}: {WD_RELOGIN_TRIES} lan/3' hong → "
                             f"nghi 10 phut, vong sau quay lai")
+                elif not ok:
+                    log_add(f"  WD {u}: bo qua mo lai (nguoi dung dung/PgUp) "
+                            f"— khong ap cooldown")
         finally:
             WD_BUSY[0] = False
-            MOVE_ABORT[0] = False
+            MOVE_ABORT.clear()          # WD la noi ghi duy nhat → release het
             PAUSE_REQUESTED[0] = False          # train/reset tiep tuc tu do
         log_add("  WD: xong kiem tra — mo phong cho cac thao tac khac")
 
@@ -3590,7 +3845,7 @@ def main():
                 import traceback
                 log_err(f"[watchdog] {e}\n{traceback.format_exc()}")
                 PAUSE_REQUESTED[0] = False
-                MOVE_ABORT[0] = False
+                MOVE_ABORT.clear()
                 WD_BUSY[0] = False
 
     def train_chain():
@@ -3617,10 +3872,9 @@ def main():
         log_add("  === Train chain: duyet tung cua so (spot theo account) ===")
         # #5 stall watchdog: so dong log hien tai + moc tien trien cuoi
         def log_count():
-            try:
-                return proc_box.size()
-            except Exception:
-                return 0
+            # Doc counter GUI-tang — KHONG goi proc_box.size() tu supervisor
+            # thread: lenh Tcl tu thread la = treo/hoa Tdcl (Tk khong build threads).
+            return _LOG_LINES[0]
         last_log_n = [log_count()]
         last_prog_t = [time.time()]
         try:
@@ -3635,49 +3889,103 @@ def main():
                 if not wins:
                     set_status("Khong con cua so game nao.")
                     break
+                # ===== SONG SONG HOAN TOAN: moi cua so 1 thread, MOI window =
+                # N luong thao tac CUNG LUC — khong co tran. An toan vi PM mode: khong active
+                # cua so, khong chuot vat ly, khong chup anh — state doc theo
+                # pid. Chong tranh chap: WINCTX/SELECTED_SPOT/run_flag deu
+                # thread-local; WIN_LOCK[hwnd] dam bao 1 cua so = 1 worker.
                 pending = []
                 stopped = False
                 now_t = time.time()
+                jobs = []
                 for hwnd, pid in wins.items():
-                    if STOP_REQUESTED[0] or check_stop_key():
-                        log_add("  Dung: STOP_REQUESTED/PgUp duoc phat hien.")
-                        stopped = True
-                        break
-                    # #3: cua so fail lien tuc → nghi 5 phut, duyet cua so khac
+                    # #3: cua so fail lien tuc → nghi 5 phut
                     until = WIN_COOLDOWN.get(hwnd, 0)
                     if now_t < until:
                         log_add(f"  (cua so {hwnd:#x} hoan {int(until - now_t)}s nua "
                                 f"— fail nhieu lan lien tiep)")
                         continue
-                    set_active(hwnd)
-                    time.sleep(2.0)              # moi cua so cach nhau 2s
-                    # #12: cua so bi minimize → restore truoc khi thao tac,
-                    # neu khong rect off-screen → moi click bi bo → ket luyet.
+                    # #12: minimize → restore (van can — PM rect fail khi an)
                     try:
                         if user32.IsIconic(hwnd):
                             user32.ShowWindow(hwnd, 9)   # SW_RESTORE
-                            time.sleep(0.4)
                     except Exception:
                         pass
                     rows = build_rows(rows_cfg_for(hwnd))
                     if not rows:
                         log_add("  (cua so nay chua co dong spot — bo qua)")
                         continue
-                    outcome = run_visit(rows)
-                    if outcome == "stopped":
-                        stopped = True
+                    jobs.append((hwnd, rows))
+                def worker(h, r):
+                    set_winctx(h)
+                    lk = for_win_lock(h)
+                    if not lk.acquire(blocking=False):
+                        return                     # worker cua khac dang vao
+                    try:
+                        outcome = run_visit(r, h)
+                        if outcome == "stopped":
+                            STOP_REQUESTED[0] = True
+                        elif outcome == "visit":
+                            pending_safe.append(h)
+                        elif outcome == "done":
+                            pass
+                    except Exception as e:
+                        import traceback
+                        log_err(f"[worker {h:#x}] {e}")
+                        log_arrive(f"  Loai cua so {h:#x}: {e} → hoan vong sau")
+                        WIN_FAILS[h] = WIN_FAILS.get(h, 0) + 1
+                        if WIN_FAILS[h] >= 3:
+                            WIN_COOLDOWN[h] = time.time() + WIN_DEFER
+                            WIN_FAILS[h] = 0
+                            log_add(f"  Cua so {h:#x} loi 3 lan → hoan 5 phut")
+                    finally:
+                        lk.release()
+                pending_safe = []
+                threads = []
+                for h, r in jobs:
+                    if PM_MODE[0]:
+                        t = threading.Thread(target=worker, args=(h, r), daemon=True)
+                        threads.append(t); t.start()
+                    else:
+                        # VAT LY (pm_mode=0): tuan tu — click + chan chuot
+                        # toan cuc ma 6 thread cung tranh = da nhau.
+                        worker(h, r)
+                # cho tat ca xong — moi 0.5s kiem PgUp/STOP (dung cuc bo van
+                # dung duoc du 6 thread dang chay — chung canh STOP_REQUESTED)
+                while any(t.is_alive() for t in threads):
+                    if STOP_REQUESTED[0] or check_stop_key():
+                        STOP_REQUESTED[0] = True
+                        USER_STOPPED[0] = True
+                        log_add("  Dung: PgUp → cho cac worker dung tai ranh gioi...")
                         break
-                    if outcome == "visit":
-                        pending.append(hwnd)
+                    time.sleep(0.5)
+                for t in threads:
+                    t.join(30)   # worker tu thoat khi thay STOP; 30s tran du
+                stopped = bool(STOP_REQUESTED[0])
                 if stopped:
                     set_status("Train chain: ĐÃ DỪNG (PgUp).")
-                    send_ctrl_f_off()   # dung giua chung: tat Giam tai cho chac
+                    # tat Giam tai MOI cua so dang bat — khong chi cua ACTIVE
+                    for _h in wins:
+                        if LT_ON.get(_h):
+                            set_winctx(_h)
+                            try:
+                                send_ctrl_f_off(_h)
+                            finally:
+                                set_winctx(None)
                     break
+                if pending_safe:
+                    pending = pending_safe
+                else:
+                    # het cua so 'visit'/'done' → ranh; van QUAY VONG sau 60s
+                    # (nhan vat level len / chet → can canh lai kiem tra lien)
+                    pending = []
                 if not pending:
-                    set_status("Train chain: hoàn tất tất cả các cửa sổ.")
-                    log_add("  === Train chain xong ===")
-                    break
-                set_status(f"Train: {len(pending)} cua so — qua lien tuc, cach nhau 2s")
+                    log_add("  Vong train xong — quay vong tiep sau 60s.")
+                    for _ in range(120):
+                        if STOP_REQUESTED[0] or check_stop_key():
+                            break
+                        time.sleep(0.5)
+                set_status(f"Train: {len(jobs)} cua so SONG SONG — vong ke tiep")
                 # #5 STALL WATCHDOG: log khong them dong moi trong 15 phut =
                 # co the chain quay vong khong tien trien → khoi dong lai toan
                 # bo (stop an → chain thoat → supervisor chay lai tu dau).
@@ -3695,23 +4003,21 @@ def main():
             tb = traceback.format_exc()
             log_add(f"  LOI Train chain: {e}")
             log_err(f"[train_chain] {tb}")
-            # #3: cua so dang lam viec vua raise → dem fail; 3 lan → nghi 5p
-            hwnd_err = ACTIVE_HWND[0]
-            if hwnd_err:
-                WIN_FAILS[hwnd_err] = WIN_FAILS.get(hwnd_err, 0) + 1
-                if WIN_FAILS[hwnd_err] >= 3:
-                    WIN_COOLDOWN[hwnd_err] = time.time() + 300.0
-                    WIN_FAILS[hwnd_err] = 0
-                    log_add(f"  Cua so {hwnd_err:#x} fail 3 lan → hoan 5 phut")
+            # Train SONG SONG → ACTIVE_HWND toan cuc VO NGHI A (watchdog/GUI
+            # cung ghi no); crash o day thuoc main-thread (list_game_windows/
+            # build_rows) → KHONG dem fail oan cua so dang chay. Worker co
+            # loi cua no thi except ben trong worker da dem WIN_FAILS.
         finally:
             TRAIN_ACTIVE[0] = False
             set_train_active(False)
             running[0] = False
 
-    def run_visit(rows):
-        """1 lan tham cua so ACTIVE: dam bao o dung spot theo Lv, Helper +
-        Giam tai BAT. Tra 'done' (Lv vuot het moi dong) / 'visit' / 'stopped'."""
-        hwnd = ACTIVE_HWND[0]
+    def run_visit(rows, hwnd=None):
+        """1 lan tham cua so (hwnd cua thread — SONG SONG MOI cua so).
+        Dam bao o dung spot theo Lv, MobileMod+Helper+Giam tai BAT.
+        Tra 'done' (Lv vuot het moi dong) / 'visit' / 'stopped'."""
+        hwnd = hwnd or ACTIVE_HWND[0]
+        set_winctx(hwnd)
         nm, lv = read_title(hwnd)
         if lv is None:
             log_add("  (chua doc duoc Lv tu title — bo qua lan nay)")
@@ -3784,11 +4090,10 @@ def main():
         px, py = pos_stable()
         if px is None or wrong_map or not at_spot(px, py, x, y):
             log_add(f"  {nm}: Lv {lv} → di toi {tok} ({x},{y}) [Lv {vmin}-{vmax}]")
-            SELECTED_SPOT[0] = (tok, x, y)
             sp_key = (hwnd, tok, x, y)
             t0_spot = time.time()
-            ab0 = bool(MOVE_ABORT[0])
-            goto(_from_train=True)
+            ab0 = hwnd in MOVE_ABORT
+            goto(_from_train=True, spot=(tok, x, y))
             if STOP_REQUESTED[0]:
                 return "stopped"
             # #1: goto tra ve ma van khong o dung spot = lan fail (60s/stuck
@@ -3796,7 +4101,7 @@ def main():
             # NGOAI LE: watchdog xen (MOVE_ABORT) hoac 3-phut-chot cua goto
             # → KHONG dem fail cua nhan vat, vong sau thu lai tu do.
             px2, py2 = a_pos()
-            wd_abort = ab0 or bool(MOVE_ABORT[0])
+            wd_abort = ab0 or (hwnd in MOVE_ABORT)
             timed_out = time.time() - t0_spot >= GOTO_MAX - 2
             if wd_abort or timed_out:
                 log_add(f"  {nm}: luot di bi {'WD tach' if wd_abort else '3-phut chan'} "
@@ -3817,7 +4122,7 @@ def main():
         if not send_home_verified(hwnd):
             # 10 lan Home ma khong thay icon Helper → hoan cua so 5 phut,
             # chuyen sang cua so ke tiep; quay lai vong duyet sau.
-            WIN_COOLDOWN[hwnd] = time.time() + 300.0
+            WIN_COOLDOWN[hwnd] = time.time() + WIN_DEFER
             send_ctrl_f_off(hwnd)     # de trang thai sach truoc khi roi
             return "visit"
         send_ctrl_f_on(hwnd)
@@ -3910,8 +4215,8 @@ def main():
         dlg.transient(root); dlg.grab_set(); dlg.configure(bg=CARD)
         dlg.resizable(False, False)
         # trung kich thuoc + vi tri GUI chinh
-        dlg.geometry(f"{root.winfo_width()}x{root.winfo_height()}"
-                     f"+{root.winfo_rootx()}+{root.winfo_rooty()}")
+        _ox, _oy = _outer_origin(root)
+        dlg.geometry(f"{root.winfo_width()}x{root.winfo_height()}+{_ox}+{_oy}")
 
         def field(labeltext, key, default=""):
             tk.Label(dlg, text=labeltext, font=f_small, fg=MUTED, bg=CARD
@@ -4057,8 +4362,8 @@ def main():
         dlg.transient(root); dlg.grab_set(); dlg.configure(bg=CARD)
         # trung kich thuoc + vi tri GUI chinh (overlay len tool)
         dlg.resizable(False, False)
-        dlg.geometry(f"{root.winfo_width()}x{root.winfo_height()}"
-                     f"+{root.winfo_rootx()}+{root.winfo_rooty()}")
+        _ox, _oy = _outer_origin(root)
+        dlg.geometry(f"{root.winfo_width()}x{root.winfo_height()}+{_ox}+{_oy}")
         cfg = load_li_cfg()
         rows = []
         def add_row(labeltext, key, default=""):
@@ -4102,10 +4407,22 @@ def main():
         _cb = {"n": 0}
         def _coord_btn(key, labeltext):
             def go():
-                pt = li_capture_coord_via_cursor()
+                pt = li_capture_coord_via_cursor()   # CLIENT coords (moi)
                 if pt:
-                    coords[key] = list(pt)
-                    set_status(f"{labeltext} = {pt}")
+                    # LI luu WINDOW-relative (li_click_rel cong goc
+                    # GetWindowRect) → quy doi client→window tru khi luu,
+                    # neu khong moi diem lech height title-bar (~30px).
+                    g = COORD_HWND[0]
+                    off = (0, 0)
+                    if g:
+                        rw = wt.RECT()
+                        user32.GetWindowRect(g, ctypes.byref(rw))
+                        r2 = find_window_hwnd(g)
+                        if r2:
+                            (cl, ct, _cw, _ch), _h = r2
+                            off = (cl - rw.left, ct - rw.top)
+                    coords[key] = [pt[0] + off[0], pt[1] + off[1]]
+                    set_status(f"{labeltext} = {coords[key]}")
             i = _cb["n"]; _cb["n"] += 1
             tk.Button(coordfr, text=f"◎ {labeltext}", command=go, font=f_small,
                       relief="flat", bd=0, bg="#F0F0F3"
@@ -4137,65 +4454,51 @@ def main():
         return li_grab_hwnd(h) if h else None
 
     def li_capture_coord_via_cursor():
-        """Chup anh cua so game -> overlay fullscreen hien anh -> BAM 1 DIEM
-        tren anh -> tra (x,y) TUONG DOI cua so game. (Cu dung root.withdraw +
-        sleep 3s block mainloop va bi modal grab_set chan Chuot → khong dung
-        duoc; bay gio theo co che overlay nhu capture_icon.)"""
+        """Chup VUNG CLIENT cua so game → cua so DEN VUA KHIT ANH (thu nho
+        vua man hinh — khong bao gio tran ngoai) → BAM 1 DIEM tren anh →
+        tra (x, y) TOA DO CLIENT truc tiep cua cua so game. Tra None + huy.
+        COORD_HWND[0] = cua so anh vua chup (de caller doi chieu)."""
         cfg = load_li_cfg()
         g = li_pick_window(li_find_windows(cfg.get("game_title", "Season21")))
         if not g:
             g = ACTIVE_HWND[0] if ACTIVE_HWND[0] and user32.IsWindow(ACTIVE_HWND[0]) else None
         if not g:
-            # title game da doi (da vo world) → cua so cua process game
-            r2 = find_window_hwnd()
+            r2 = find_window_hwnd()      # title game da doi → cua so process game
             if r2:
                 g = r2[1]
         if not g:
             set_status("Tim khong thay cua so game (mo game truoc)")
             return None
-        shot = li_grab_hwnd(g)
+        shot = grab_client(g)            # CLIENT region — toa do bam ra chinh
         if shot is None:
             set_status("Khong chup duoc cua so game.")
             return None
-        from PIL import Image, ImageTk
+        COORD_HWND[0] = g
         prev_grab = root.grab_current()
-        box = {"pt": None}
+        res = {"pt": None}
         ov = tk.Toplevel(root)
-        ov.attributes("-fullscreen", True)
         ov.attributes("-topmost", True)
-        ov.configure(bg="black", cursor="crosshair")
+        ov.configure(bg="black")
         ov.grab_set()
         ov.lift()
-        cv = tk.Canvas(ov, bg="black", highlightthickness=0)
-        cv.pack(fill="both", expand=True)
-        SW, SH = ov.winfo_screenwidth(), ov.winfo_screenheight()
-        scale = min(2, max(1, SW // shot.width, SH // shot.height))
-        im = shot if scale == 1 else shot.resize(
-            (shot.width * scale, shot.height * scale), Image.LANCZOS)
-        tk_img = ImageTk.PhotoImage(im)
-        ox, oy = (SW - im.width) // 2, (SH - im.height) // 2
-        cv.create_image(ox, oy, anchor="nw", image=tk_img)
-        cv._img_ref = tk_img
-        cv.create_text(SW // 2, 24, fill="#FFD60A", font=("Segoe UI", 17, "bold"),
-                       text=f"BAM 1 DIEM vao vi tri can lay toa do  "
-                            f"(x{scale}, Esc de huy)")
+        cv, scale, ox, oy = _overlay_from_shot(
+            ov, shot, f"BAM 1 DIEM vao vi tri can lay toa do  "
+                      f"(x{scale:.2f}, Esc de huy)")
 
         def _click(e):
-            box["pt"] = ((e.x - ox) // scale, (e.y - oy) // scale)
+            x = int(round((e.x - ox) / scale))
+            y = int(round((e.y - oy) / scale))
+            if 0 <= x < shot.width and 0 <= y < shot.height:
+                res["pt"] = (x, y)      # truc tiep toa do CLIENT
             ov.destroy()
 
         cv.bind("<ButtonRelease-1>", _click)
         ov.bind("<Escape>", lambda _e: ov.destroy())
         ov.bind("<Destroy>", lambda _e: prev_grab and prev_grab.grab_set())
-        ov.wait_window()   # block TREN OVERLAY, mainloop van chay -> khong dong bang
-        COORD_HWND[0] = g          # caller can biet diem do thuoc cua so nao
-        r = wt.RECT()
-        user32.GetWindowRect(g, ctypes.byref(r))
-        x, y = box["pt"] if box["pt"] else (0, 0)
-        if box["pt"] and not (0 <= x < (r.right - r.left) and 0 <= y < (r.bottom - r.top)):
-            set_status("Diem ngoai cua so game")
+        ov.wait_window()   # block TREN OVERLAY, mainloop van chay -> khong dong
+        if res["pt"] is None:
             return None
-        return box["pt"]
+        return res["pt"]
 
     def li_run_clicked():
         if LI_BUSY[0]:
@@ -4256,7 +4559,8 @@ def main():
         # Tab Log 2 phan: tren = lich su reset (chi note_reset_success ghi);
         # duoi = log tien trinh/cac buoc de tra soat loi.
         idx = proc_box.size()
-        proc_box.insert(tk.END, text)
+        _LOG_LINES[0] = idx + 1      # cap nhat tren GUI thread — worker/doc
+        proc_box.insert(tk.END, text)  #   khac chi doc int
         if color:
             proc_box.itemconfig(idx, fg=color)
         elif done:
@@ -4293,10 +4597,13 @@ def main():
     ROOT[0] = root
     LOG_HOOK[0] = _log_add
 
-    def get_target():
-        """Tra ve (mid, tok, tx, ty) tu spot duoc chon, hoac vi tri live hien tai."""
-        if SELECTED_SPOT[0]:
-            tok, x, y = SELECTED_SPOT[0]
+    def get_target(spot=None):
+        """Tra ve (mid, tok, tx, ty) — spot truyen truc tiep (train song song:
+        KHONG share SELECTED_SPOT toan cuc), hoac spot manual da chon, hoac
+        vi tri live hien tai."""
+        sel = spot or SELECTED_SPOT[0]
+        if sel:
+            tok, x, y = sel
             mid = _TOKEN_TO_MID.get(tok)
             if mid is None:
                 raise ValueError(f"Token {tok} khong biet MapID de load grid")
@@ -4319,7 +4626,7 @@ def main():
         PM MODE (mac dinh): Enter→gõ→Enter toan bo qua PostMessage — o chat
         cua client doc thang message queue (da churn minh tren IGCN S21),
         khong clipboard, khong guard focus, game o background van gui."""
-        wh = ACTIVE_HWND[0] or focus_game()
+        wh = win_hwnd() or (None if PM_MODE[0] else focus_game())
         if not wh or not user32.IsWindow(wh):
             log_add("  lenh: chua co cua so game dang mo — HOAN gui lenh "
                     "(mo game roi thao tac).")
@@ -4474,7 +4781,26 @@ def main():
                 log_add("  Reset đã hủy (bấm nút lần 2).")
                 set_status("Reset đã hủy.")
                 return
-            _run_reset_chain()
+            # Reset tu nut = thao tac GUI → cua so ACTIVE hien tai; gan ctx
+            # + giu WIN_LOCK de khong chen giua worker cua no.
+            _rh = ACTIVE_HWND[0]
+            if _rh:
+                set_winctx(_rh)
+            _rlk = for_win_lock(_rh) if _rh else None
+            if _rlk:
+                # acquire blocking: worker giu lock ca run_visit (phut),
+                # lock khong FIFO → reset co the doi kha lau. Poll 0.5s de
+                # "bam lan 2 = huy" / PgUp van thoat duoc KHUC wait.
+                while not _rlk.acquire(blocking=True, timeout=0.5):
+                    if RESET_STOP[0] or STOP_REQUESTED[0] or check_stop_key():
+                        log_add("  Reset đã hủy (đợi lượt cửa sổ).")
+                        set_status("Reset đã hủy.")
+                        return
+            try:
+                _run_reset_chain()
+            finally:
+                if _rlk:
+                    _rlk.release()
         finally:
             RESET_ACTIVE[0] = False
             set_reset_active(False)
@@ -4489,13 +4815,15 @@ def main():
             threading.Thread(target=reset_button_task, daemon=True).start()
 
     def a_pos():
-        """Toa do nhan vat cua cua so dang ACTIVE."""
-        pm = get_pm_for(ACTIVE_HWND[0]) if ACTIVE_HWND[0] else None
+        """Toa do nhan vat cua cua so cua THREAD HIEN TAI (WINCTX)."""
+        h = win_hwnd()
+        pm = get_pm_for(h) if h else None
         return rd_pos(pm) if pm else (None, None)
 
     def a_map():
-        """World ID map cua cua so dang ACTIVE."""
-        pm = get_pm_for(ACTIVE_HWND[0]) if ACTIVE_HWND[0] else None
+        """World ID map cua cua so cua THREAD HIEN TAI."""
+        h = win_hwnd()
+        pm = get_pm_for(h) if h else None
         return rd_map(pm) if pm else None
 
     def pos_stable(timeout=2.0, tol=0.5):
@@ -4530,7 +4858,7 @@ def main():
             # Sau lenh /move: cho 3s de game warp xong moi lam tiep.
             t_wait = time.time()
             while time.time() - t_wait < 3.0:
-                if not running[0]:
+                if not run_flag():
                     return False
                 time.sleep(0.2)
             changed = False
@@ -4543,14 +4871,16 @@ def main():
                 except Exception:
                     mid = None
                 if mid != m:
-                    if not running[0]:
+                    if not run_flag():
                         return False
                     continue
                 # Dung map: click 400,300 EP game cap nhat toa do memory
                 # (offset chi refresh khi co thao tac), roi doc on dinh.
                 if not clicked:
                     clicked = True
-                    click_at(ACX[0], ACY[0], right=False, hwnd=GHWND)
+                    _g = win_geom(win_hwnd())
+                    if _g:
+                        click_at(_g[4], _g[5], right=False, hwnd=win_hwnd())
                 x, y = pos_stable()
                 if x is None:
                     continue
@@ -4562,7 +4892,7 @@ def main():
                 if time.time() - t0 > 1.5:
                     changed = True
                     break
-                if not running[0]:
+                if not run_flag():
                     return False
             if changed:
                 time.sleep(1.0)
@@ -4573,30 +4903,32 @@ def main():
         log_add(f"  Warp {tok} that bai hoan toan.")
         return False
 
-    def goto(_from_train=False):
+    def goto(_from_train=False, spot=None):
         """Di toi spot: warp -> tim duong -> di. Neu sau 60s chua toi -> warp
-        lai va bat dau lai tu dau.
+        lai va bat dau lai tu dau.  spot=(tok,x,y) truyen truc tiep de 6
+        thread train SONG SONG khong tranh SELECTED_SPOT chung.
         GIOI HAN CHOT (yeu cau): 1 luot di toi da GOTO_MAX=3 phut → bo qua,
         tra ve — run_visit/tu lenh se chuyen cua so khac, vong sau quay lai
         (SPOT_COOLDOWN cua #1 van dem fail nhu cu). MOVE_ABORT (watchdog dang
         mo lai cua so) → dung ngay KHONG dem that bai."""
-        if running[0]:
+        if run_flag():
             return
         try:
-            m, tok, tx, ty = get_target()
+            m, tok, tx, ty = get_target(spot)
         except ValueError:
             set_status("Chon 1 train spot hoac dam bao nhan vat dang o map."); return
         # Tham so da chon sau khi test: 0.1s / 6 unit
         click_interval = 0.1
         mov_ahead = 6.0
-        running[0] = True
+        run_flag(True)
         t_start = time.time()
-        PM = pm_target(GHWND)     # PM mode: khong chiem chuot → khong chan
+        PM = pm_target(win_hwnd())   # PM mode: khong chiem chuot → khong chan
         if not PM:
-            MOUSE_BLOCK[0] += 1   # App toan quyen chuot: chan click vat ly cua user
+            with _MOUSEB_LOCK:       # RMW khong atomic — 2 thread vat ly chen
+                MOUSE_BLOCK[0] += 1  # nhau mat increm → hook mo som/tre
         try:
-            while running[0] and not STOP_REQUESTED[0]:
-                if MOVE_ABORT[0]:
+            while run_flag() and not STOP_REQUESTED[0]:
+                if win_hwnd() in MOVE_ABORT:
                     log_add("  WD dang mo lai cua so → Huy luot di (khong dem fail).")
                     return
                 if time.time() - t_start > GOTO_MAX:
@@ -4606,14 +4938,15 @@ def main():
                     return
                 arrived = _goto_once(m, tok, tx, ty, click_interval, mov_ahead,
                                      _from_train)
-                if arrived or STOP_REQUESTED[0] or not running[0]:
+                if arrived or STOP_REQUESTED[0] or not run_flag():
                     return
                 log_add("  Chua toi dich (60s / stuck >5 / 30s) -> /move lai tu dau.")
                 set_status("Move lại từ đầu...")
         finally:
-            running[0] = False
+            run_flag(False)
             if not PM:
-                MOUSE_BLOCK[0] = max(0, MOUSE_BLOCK[0] - 1)  # tra chuot (neu khong
+                with _MOUSEB_LOCK:
+                    MOUSE_BLOCK[0] = max(0, MOUSE_BLOCK[0] - 1)  # tra chuot (neu khong
             #                                          # co train/reset bao ngoai)
 
     def _goto_once(m, tok, tx, ty, click_interval, mov_ahead, from_train=False):
@@ -4624,7 +4957,7 @@ def main():
         # Dam bao game o foreground truoc khi click (gui phim/warp can focus).
         # PM mode: KHONG can focus — click/chat deu qua PostMessage nen
         # tranh lat lat man hinh giua cac cua so.
-        if not pm_target(GHWND):
+        if not pm_target(win_hwnd()):
             focus_game()
             time.sleep(0.1)
         # TRUOC /move: neu NUT GIAM TAI CON HIEN tren man hinh -> tat truoc
@@ -4646,7 +4979,9 @@ def main():
         set_status("Click 400,300 de cap nhat toa do...")
         # Click vao tam nhan vat (400,300) de EP game ghi lai toa do memory
         # (offset chi refresh khi co thao tac), roi doc toi khi ONH DINH.
-        click_at(ACX[0], ACY[0], right=False, hwnd=GHWND)
+        _g0 = win_geom(win_hwnd())
+        if _g0:
+            click_at(_g0[4], _g0[5], right=False, hwnd=win_hwnd())
         x0, y0 = pos_stable()
         if x0 is None:
             set_status("Mat ket noi game. Admin + game mo."); return True
@@ -4725,16 +5060,17 @@ def main():
         step_no = [0]
         last_rect_t = -10.0
         # Bien local, cap nhat moi khi user di chuyen/resize cua so game.
-        _L, _T, _W, _H = ARECT[0]
-        _cx, _cy = ACX[0], ACY[0]
+        _gg = win_geom(win_hwnd()) or (0, 0, 800, 600, ANCHOR_X, ANCHOR_Y)
+        _L, _T, _W, _H = _gg[:4]
+        _cx, _cy = _gg[4], _gg[5]
 
         def right_hold_1s():
             """Giu nut chuot PHAI 1s tai tam nhan vat (lenh 'dung tan cong'
             cua MU) roi tha ra. PM mode: giu qua PostMessage (nen)."""
-            if pm_target(GHWND):
-                cl = mu_pm.screen_to_client(GHWND, _cx, _cy)
+            if pm_target(win_hwnd()):
+                cl = mu_pm.screen_to_client(win_hwnd(), _cx, _cy)
                 if cl:
-                    mu_pm.pm_mouse_hold(GHWND, cl[0], cl[1], 1.0, right=True)
+                    mu_pm.pm_mouse_hold(win_hwnd(), cl[0], cl[1], 1.0, right=True)
                 return
             user32.SetCursorPos(int(_cx), int(_cy))
             time.sleep(0.02)
@@ -4768,13 +5104,15 @@ def main():
             log_add("  Khong tim duoc duong moi; tiep tuc di theo duong cu.")
             return False
 
-        reset_stop()  # xoa co STOP tu lan chay truoc
+        # KHONG reset_stop() o day: co STOP toan cuc — worker/user/Wd khac
+        # da dat thi xoa mat = nuot lenh Dung (PgUp). Supervisor/train_chain
+        # da clear co truoc moi vong.
         try:
-            while running[0] and not STOP_REQUESTED[0]:
+            while run_flag() and not STOP_REQUESTED[0]:
                 if check_stop_key():
                     STOP_REQUESTED[0] = True
                     break
-                if MOVE_ABORT[0]:
+                if win_hwnd() in MOVE_ABORT:
                     log_add("  WD mo lai cua so → huy luot di nay.")
                     return False
                 if PAUSE_REQUESTED[0] and not wait_pause("di"):
@@ -4789,9 +5127,11 @@ def main():
                     log_add(f"  >{GO_TIMEOUT:.0f}s chua toi dich -> warp lai.")
                     return False
                 # Refresh rect cua so game moi 0.4s (neu user di chuyen/resize).
+                # win_hwnd() (thread-local) — KHONG dung ACTIVE_HWND toan cuc:
+                # N worker song song ma lay rect cua cua so khac → click sai.
                 if now - last_rect_t > 0.4:
                     last_rect_t = now
-                    rect2 = find_window_hwnd(ACTIVE_HWND[0])
+                    rect2 = find_window_hwnd(win_hwnd())
                     if rect2:
                         (nL, nT, nW, nH), _ = rect2
                         if (nL, nT, nW, nH) != (_L, _T, _W, _H):
@@ -4894,16 +5234,16 @@ def main():
                 if (now - last_click_t >= CLICK_INTERVAL
                         or moved_since >= MOV_AHEAD) and now - last_click_t >= MIN_GAP:
                     step_no[0] += 1
-                    click_at(click_x, click_y, right=False, hwnd=GHWND)
+                    click_at(click_x, click_y, right=False, hwnd=win_hwnd())
                     last_click_pos = (x, y)
                     last_click_t = now
                 time.sleep(POLL)
             if STOP_REQUESTED[0]:
                 # Nhan PgUp -> dung va tra quyen dieu khien chuot
-                running[0] = False
+                run_flag(False)
                 set_status("DA DUNG (PgUp) - da tra quyen chuot.")
                 log_add("  Stopped by PgUp: da ngung chiem chuot.")
-            elif running[0]:
+            elif run_flag():
                 set_status("Da dung.")
         except Exception as e:
             set_status(f"Loi: {e}")
@@ -4912,13 +5252,13 @@ def main():
     def calculate():
         """Tinh truoc duong di (khong click, khong di): in tat ca cac buoc,
         sau do lan luot sang tung diem (den -> xanh) va cuon log theo dong sang."""
-        if running[0]:
+        if run_flag():
             return
         try:
             m, tok, tx, ty = get_target()
         except ValueError:
             set_status("Chon 1 train spot hoac dam bao nhan vat dang o map."); return
-        running[0] = True
+        run_flag(True)
         set_status("Tinh toan duong di (dry-run)...")
         x0, y0 = a_pos()
         if x0 is None:
@@ -4932,7 +5272,7 @@ def main():
         except Exception as e:
             set_status(f"Loi load map {m}: {e}")
             log_err(f"[calculate] Loi load map {m}: {e}")
-            running[0] = False; return
+            run_flag(False); return
         sx, sy = mu_path.nearest_walkable(walk, *s0) or s0
         gx, gy = mu_path.nearest_walkable(walk, *g0) or g0
         if (gx, gy) != g0:
@@ -4950,7 +5290,7 @@ def main():
             if not path or len(path) < 2:
                 set_status(f"Khong tim duoc duong toi ({tx:.0f},{ty:.0f}). Co the bi ket boi tuong.")
                 log_err(f"[calculate] Map {m}: khong tim duoc duong den ({tx:.0f},{ty:.0f})")
-                running[0] = False; return
+                run_flag(False); return
         wps = [mu_path.tile_to_coord(*p) for p in path]
         n_wp = len(wps)
         log_add(f"  Bat dau: ({x0:.0f},{y0:.0f})  ->  Dich: ({tx:.0f},{ty:.0f})  | {n_wp} diem")
@@ -4968,10 +5308,10 @@ def main():
         # Lan luot sang tung diem: den -> xanh, va cuon theo dong sang
         delay = max(20, min(400, int(8000 / n_wp)))   # ms / diem, gioi han 20-400ms
         def light(i):
-            if not running[0] or i >= n_wp:
-                if running[0]:
+            if not run_flag() or i >= n_wp:
+                if run_flag():
                     set_status(f"Xong: da chay het {n_wp} diem (dry-run).")
-                running[0] = False
+                run_flag(False)
                 return
             idx = line_idx[i]
             if 0 <= idx < logbox.size():

@@ -26,14 +26,27 @@ APP_DIR = (os.path.dirname(os.path.abspath(sys.argv[0]))
 FLAGS_FILE = os.path.join(APP_DIR, "mu_goto_flags.json")
 
 
+_FLAG_CACHE = {"mt": None, "data": None}
+
 def load_flags(path=FLAGS_FILE):
-    """{ten_cờ: [int_addr, ...]} — {} nếu thiếu file / hỏng."""
+    """{ten_cờ: [int_addr, ...]} — {} nếu thiếu file / hỏng.
+    CACHE theo mtime: state_read goi lien tuc (moi 0.5s × N cua so × M co)
+    → khong mo file moi luot; file duoc sua ben ngoai → tu dong doc lai."""
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return {}
+    if _FLAG_CACHE["mt"] == mt and _FLAG_CACHE["data"] is not None:
+        return _FLAG_CACHE["data"]
     try:
         with open(path, "r", encoding="utf-8") as f:
             raw = json.load(f)
-        return {k: [int(x, 16) for x in v] for k, v in raw.items()}
+        data = {k: [int(x, 16) for x in v] for k, v in raw.items()}
     except Exception:
-        return {}
+        data = {}
+    _FLAG_CACHE["mt"] = mt
+    _FLAG_CACHE["data"] = data
+    return data
 
 
 def vote(vals):
@@ -75,6 +88,8 @@ class FlagReader:
         """bool | None — majority vote trên mọi địa chỉ của cờ `name`.
         Ten khop mem: hoa thuong + bo khoang/tr_gach (user co the luu
         'Giam Tai' hoac 'GiamTai')."""
+        self.flags = load_flags()   # O(1) khi mtime khong doi; file scan lai
+                                    # giua session → Reader tu cap nhat
         addrs = self.flags.get(name)
         if not addrs:
             want = name.lower().replace(" ", "").replace("_", "")
